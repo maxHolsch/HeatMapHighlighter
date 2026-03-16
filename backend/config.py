@@ -17,59 +17,7 @@ SAVED_HIGHLIGHTS_DIR = (
 
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5-2025-08-07")
 
-DEFAULT_PROMPT_TEMPLATE = r"""I am going to give you a transcript of a conversation. It may have been generated using an automatic speech recognition model, and therefore there may be some errors.
-
-The transcript is split up into paragraphs. Each paragraph will be formatted in a way that contains various metadata, including its index (order) in the overall transcript and the speaker's name.
-
-The format for each paragraph will be as follows:
-
-<paragraph>
-<index> {{index}} </index>
-<speaker> {{name}} </speaker>
-<text> {{transcript}} </text>
-</paragraph>
-
-Your task is to determine whether each paragraph in the conversation contains content that may be considered a "powerful or noteworthy moment" -- that is, an emotionally or semantically important moment that contributes significantly to the conversation. These moments may also consist of content that represents important themes that emerged from the conversation. Often, they might involve people telling personal stories or life experiences, so focus on those types of moments. Similarly, observations or analyses that people make based on their experiences may be good candidates.
-
-**Ignore any portions of the conversation (often at the beginning and end) which contain only instructions and logistical details.**
-
-The conversation you will see was part of a broader group of community-level civic conversations held around the greater Boston area. Those conversations went through a thematic analysis, which resulted in a codebook of themes and sub-themes. One of those themes is described below; when determining whether a paragraph contains a noteworthy moment, **focus only on content that is relevant to this theme and its sub-themes**:
-
-<theme>
-{thematic_codebook_text}
-</theme>
-
-For each paragraph, return an integer score between 0 and 10 that rates the semantic or emotional significance of any content in the paragraph that relates to the above theme. Your score should reflect the degree to which meaningful or powerful content exists in a given paragraph, and not necessarily the proportion of a paragraph that addresses a given theme. For example, a paragraph where half of the content discusses a particularly powerful or emotional story relating the theme should receive a higher score than one that addresses the theme throughout the entire paragraph, but does so on a more shallow level.
-
-A story or experience may also span multiple paragraphs that were spoken by the same person. If this happens, you should score all paragraphs in such a span utilizing prior or subsequent context as necessary.
-
-Use the following scale as rough guidance when determining scores:
-
-0-1: The paragraph only contains content that is either purely logistical (e.g., introductions and instructions), unrelated to the theme, or mentions the theme only in passing without any substance.
-
-2-4: The paragraph contains some content that relates to the theme but is clinical, brief, or lacks personal investment.
-
-5-7: The paragraph provides a clear opinion or a basic observation related to the theme. It adds some value to the conversation but may lack expressiveness or emotional resonance.
-
-8-10: Contains a clear personal narrative, a specific life experience, or a thoughtful analysis related to the theme. Often delivered with high expressiveness or emotional resonance.
-
-Briefly do some reasoning to determine whether the content in the paragraph is relevant to the theme or any of the sub-themes; then, consider how emotionally resonant or powerful that content is. Provide your output in the following JSON object format, where the "score" is an integer between 0 and 10, and you provide an output for each paragraph in the formatted transcript. Make sure that all "score" values are between 0 and 10, and that you produce an output for every paragraph! (For example, if there are 100 paragraphs in the transcript, you should output 100 scores.)
-
-{{
-    {{
-        "paragraph_index": 0,
-        "reasoning": <1 or 2 sentences describing the reasoning for the score>,
-        "score": <integer score between 0 - 10>
-    }},
-    {{
-        "paragraph_index": 1,
-        "reasoning": <1 or 2 sentences describing the reasoning for the score>,
-        "score": <integer score between 0 - 10>
-    }},
-    ...
-}}
-
-Provide your output as a JSON list of objects. It is critical that you do not skip any paragraphs. Even if a paragraph receives a score of 0, it must be included in the JSON output to maintain a 1:1 mapping with the input. There are {num_paragraphs} paragraphs in this transcript, so your output JSON list should contain {num_paragraphs} entries.
-
-Here is the full formatted transcript of the conversation that I would like you to evaluate:
-"""
+with open(
+    BASE_DIR / "llm-auto-highlighter" / "backend" / "base_prompt.md", "r", encoding="utf-8",
+) as f:
+    DEFAULT_PROMPT_TEMPLATE = f.read()

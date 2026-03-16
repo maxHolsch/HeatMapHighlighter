@@ -1,29 +1,35 @@
 const BASE = '/api';
 
+async function request(url, options) {
+  const res = await fetch(url, options);
+  const body = await res.json();
+  if (!res.ok) {
+    const message = body?.error || `Request failed (${res.status})`;
+    throw new Error(message);
+  }
+  return body;
+}
+
 export async function fetchConversations() {
-  const res = await fetch(`${BASE}/conversations`);
-  return res.json();
+  return request(`${BASE}/conversations`);
 }
 
 export async function fetchTranscript(conversationId) {
-  const res = await fetch(`${BASE}/conversations/${conversationId}/transcript`);
-  return res.json();
+  return request(`${BASE}/conversations/${conversationId}/transcript`);
 }
 
 export async function fetchPredictionFiles(conversationId) {
-  const res = await fetch(`${BASE}/conversations/${conversationId}/predictions`);
-  return res.json();
+  return request(`${BASE}/conversations/${conversationId}/predictions`);
 }
 
 export async function fetchPrediction(conversationId, filename) {
-  const res = await fetch(
+  return request(
     `${BASE}/conversations/${conversationId}/predictions/${filename}`
   );
-  return res.json();
 }
 
 export async function fetchPreviewPrompt(conversationId, promptTemplate) {
-  const res = await fetch(
+  return request(
     `${BASE}/conversations/${conversationId}/preview-prompt`,
     {
       method: 'POST',
@@ -31,11 +37,10 @@ export async function fetchPreviewPrompt(conversationId, promptTemplate) {
       body: JSON.stringify({ prompt_template: promptTemplate }),
     }
   );
-  return res.json();
 }
 
 export async function runDetectHighlights(conversationId, promptTemplate) {
-  const res = await fetch(
+  return request(
     `${BASE}/conversations/${conversationId}/detect-highlights`,
     {
       method: 'POST',
@@ -43,11 +48,10 @@ export async function runDetectHighlights(conversationId, promptTemplate) {
       body: JSON.stringify({ prompt_template: promptTemplate }),
     }
   );
-  return res.json();
 }
 
 export async function saveHighlights(conversationId, highlights) {
-  const res = await fetch(
+  return request(
     `${BASE}/conversations/${conversationId}/highlights/save`,
     {
       method: 'POST',
@@ -55,10 +59,8 @@ export async function saveHighlights(conversationId, highlights) {
       body: JSON.stringify({ highlights }),
     }
   );
-  return res.json();
 }
 
 export async function fetchDefaultPrompt() {
-  const res = await fetch(`${BASE}/default-prompt`);
-  return res.json();
+  return request(`${BASE}/default-prompt`);
 }

@@ -12,9 +12,6 @@ export default function PreviewModal({
       <div className="modal-content" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <h2>Prompt Preview</h2>
-          <button className="btn btn-secondary" onClick={onCancel}>
-            Close
-          </button>
         </div>
         <div className="modal-body">
           {meta && (
@@ -36,7 +33,7 @@ export default function PreviewModal({
             onClick={onConfirm}
             disabled={detecting}
           >
-            {detecting ? 'Detecting...' : 'Get Highlights'}
+            {detecting ? 'Detecting...' : 'Run Auto-Highlighting'}
           </button>
         </div>
       </div>

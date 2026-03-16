@@ -2,14 +2,9 @@ import React, { useCallback } from 'react';
 
 function getHeatmapColor(score, threshold) {
   if (score < threshold) return 'transparent';
-
-  const range = 10 - threshold;
-  if (range <= 0) return 'transparent';
-
-  const t = (score - threshold) / range;
-  const lightness = 95 - t * 40;
-  const saturation = 55 + t * 20;
-  return `hsl(270, ${saturation}%, ${lightness}%)`;
+  if (score <= 4) return 'hsl(270, 55%, 93%)';
+  if (score <= 7) return 'hsl(270, 60%, 83%)';
+  return 'hsl(270, 65%, 72%)';
 }
 
 export default React.memo(function SnippetBlock({
@@ -22,9 +17,9 @@ export default React.memo(function SnippetBlock({
   onMouseMove,
   onMouseLeave,
 }) {
-  const isHighlighted = viewMode === 'heatmap' && score >= threshold;
   const bgColor =
     viewMode === 'heatmap' ? getHeatmapColor(score, threshold) : 'transparent';
+  const isHighlighted = viewMode === 'heatmap' && bgColor !== 'transparent';
 
   const handleMouseMove = useCallback(
     (e) => {

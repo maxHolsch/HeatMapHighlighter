@@ -258,6 +258,43 @@ body {
   cursor: not-allowed;
 }
 
+/* ---- Error Banner ---- */
+.error-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 18px;
+  margin-bottom: 16px;
+  background: hsl(0, 70%, 96%);
+  border: 1px solid hsl(0, 55%, 75%);
+  border-radius: var(--radius);
+  color: hsl(0, 55%, 35%);
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.error-message {
+  flex: 1;
+  word-break: break-word;
+}
+
+.error-dismiss {
+  flex-shrink: 0;
+  padding: 4px 12px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  background: transparent;
+  border: 1px solid hsl(0, 55%, 75%);
+  border-radius: 4px;
+  color: hsl(0, 55%, 40%);
+  cursor: pointer;
+}
+
+.error-dismiss:hover {
+  background: hsl(0, 55%, 90%);
+}
+
 /* ---- Loading ---- */
 .loading-indicator {
   text-align: center;
@@ -266,9 +303,58 @@ body {
   color: var(--text-secondary);
 }
 
-.loading-indicator.detecting {
-  color: var(--accent);
+/* ---- Detecting Overlay ---- */
+.detecting-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 900;
+}
+
+.detecting-card {
+  background: var(--surface-color);
+  border-radius: 12px;
+  padding: 36px 48px;
+  text-align: center;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.2);
+  max-width: 420px;
+}
+
+.detecting-spinner {
+  width: 40px;
+  height: 40px;
+  margin: 0 auto 18px;
+  border: 4px solid hsl(270, 30%, 88%);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.detecting-text {
+  font-size: 1.05rem;
   font-weight: 600;
+  color: var(--accent);
+  margin-bottom: 6px;
+}
+
+.detecting-elapsed {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--text-color);
+  margin-bottom: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.detecting-subtext {
+  font-size: 0.82rem;
+  color: var(--text-secondary);
 }
 
 /* ---- Preview Modal ---- */

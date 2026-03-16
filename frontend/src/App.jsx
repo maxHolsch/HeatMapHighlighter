@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import ConversationSelector from './components/ConversationSelector';
 import PredictionsFileSelector from './components/PredictionsFileSelector';
 import PromptEditor from './components/PromptEditor';
@@ -29,11 +29,29 @@ export default function App() {
   const [previewMeta, setPreviewMeta] = useState(null);
   const [loading, setLoading] = useState(false);
   const [detecting, setDetecting] = useState(false);
+  const [detectElapsed, setDetectElapsed] = useState(0);
   const [viewMode, setViewMode] = useState('heatmap');
+  const [error, setError] = useState(null);
+
+  const timerRef = useRef(null);
 
   useEffect(() => {
     fetchConversations().then(setConversations);
     fetchDefaultPrompt().then((data) => setPromptTemplate(data.prompt_template));
+  }, []);
+
+  const startTimer = useCallback(() => {
+    setDetectElapsed(0);
+    timerRef.current = setInterval(() => {
+      setDetectElapsed((prev) => prev + 1);
+    }, 1000);
+  }, []);
+
+  const stopTimer = useCallback(() => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
   }, []);
 
   const handleConversationChange = useCallback(async (convId) => {
@@ -42,6 +60,7 @@ export default function App() {
     setSelectedPredFile('');
     setPredictionFiles([]);
     setTranscript(null);
+    setError(null);
 
     if (!convId) return;
 
@@ -53,6 +72,8 @@ export default function App() {
       ]);
       setTranscript(transcriptData);
       setPredictionFiles(files);
+    } catch (e) {
+      setError(e.message);
     } finally {
       setLoading(false);
     }
@@ -61,6 +82,7 @@ export default function App() {
   const handlePredictionFileChange = useCallback(
     async (filename) => {
       setSelectedPredFile(filename);
+      setError(null);
       if (!filename || !selectedConv) {
         setScores(null);
         return;
@@ -69,6 +91,8 @@ export default function App() {
       try {
         const data = await fetchPrediction(selectedConv, filename);
         setScores(data.scores);
+      } catch (e) {
+        setError(e.message);
       } finally {
         setLoading(false);
       }
@@ -78,12 +102,15 @@ export default function App() {
 
   const handlePreviewPrompt = useCallback(async () => {
     if (!selectedConv) return;
+    setError(null);
     setLoading(true);
     try {
       const data = await fetchPreviewPrompt(selectedConv, promptTemplate);
       setPreviewText(data.preview_prompt);
       setPreviewMeta(data);
       setShowPreview(true);
+    } catch (e) {
+      setError(e.message);
     } finally {
       setLoading(false);
     }
@@ -92,23 +119,46 @@ export default function App() {
   const handleDetectHighlights = useCallback(async () => {
     if (!selectedConv) return;
     setShowPreview(false);
+    setError(null);
     setDetecting(true);
+    startTimer();
     try {
       const data = await runDetectHighlights(selectedConv, promptTemplate);
       setScores(data.scores);
       const files = await fetchPredictionFiles(selectedConv);
       setPredictionFiles(files);
       setSelectedPredFile(data.filename);
+    } catch (e) {
+      setError(e.message);
     } finally {
+      stopTimer();
       setDetecting(false);
     }
-  }, [selectedConv, promptTemplate]);
+  }, [selectedConv, promptTemplate, startTimer, stopTimer]);
+
+  const formatElapsed = (seconds) => {
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    return m > 0 ? `${m}m ${s}s` : `${s}s`;
+  };
 
   return (
     <div className="app">
       <header className="app-header">
         <h1>Conversation Highlight Tool</h1>
       </header>
+
+      {error && (
+        <div className="error-banner">
+          <span className="error-message">{error}</span>
+          <button
+            className="error-dismiss"
+            onClick={() => setError(null)}
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
 
       <div className="control-panel">
         <div className="control-row">
@@ -155,8 +205,19 @@ export default function App() {
       )}
 
       {detecting && (
-        <div className="loading-indicator detecting">
-          Running highlight detection... This may take a minute.
+        <div className="detecting-overlay">
+          <div className="detecting-card">
+            <div className="detecting-spinner" />
+            <div className="detecting-text">
+              Running highlight detection...
+            </div>
+            <div className="detecting-elapsed">
+              Elapsed: {formatElapsed(detectElapsed)}
+            </div>
+            <div className="detecting-subtext">
+              This can take 1-3 minutes depending on transcript length.
+            </div>
+          </div>
         </div>
       )}
 
