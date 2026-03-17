@@ -26,6 +26,15 @@ from highlight_detector import (  # noqa: E402
     save_predictions,
     unmerge_scores,
 )
+from span_detector import (  # noqa: E402
+    build_span_prompt,
+    call_openai_spans,
+    group_above_threshold,
+    list_span_prediction_files,
+    load_span_prediction_file,
+    resolve_all_highlights,
+    save_span_predictions,
+)
 
 app = Flask(__name__)
 CORS(app)
@@ -162,10 +171,11 @@ def api_save_highlights(conversation_id: str):
     body = request.get_json(force=True)
     highlights = body.get("highlights", [])
 
-    SAVED_HIGHLIGHTS_DIR.mkdir(parents=True, exist_ok=True)
+    conv_dir = SAVED_HIGHLIGHTS_DIR / conversation_id
+    conv_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    filename = f"{conversation_id}_{ts}.json"
-    output_path = SAVED_HIGHLIGHTS_DIR / filename
+    filename = f"highlights_{ts}.json"
+    output_path = conv_dir / filename
 
     payload = {
         "conversation_id": conversation_id,
@@ -182,6 +192,98 @@ def api_save_highlights(conversation_id: str):
 @app.route("/api/default-prompt", methods=["GET"])
 def api_default_prompt():
     return jsonify({"prompt_template": DEFAULT_PROMPT_TEMPLATE})
+
+
+# ------------------------------------------------------------------
+# Span-level (second-pass) routes
+# ------------------------------------------------------------------
+
+@app.route(
+    "/api/conversations/<conversation_id>/detect-spans",
+    methods=["POST"],
+)
+def api_detect_spans(conversation_id: str):
+    body = request.get_json(force=True)
+    predictions_file = body.get("predictions_file")
+    threshold = body.get("threshold", 5)
+
+    if not predictions_file:
+        return jsonify({"error": "predictions_file is required"}), 400
+
+    try:
+        conv_data = _get_conversation(conversation_id)
+    except FileNotFoundError as e:
+        return jsonify({"error": str(e)}), 404
+
+    try:
+        raw_predictions = load_prediction_file(conversation_id, predictions_file)
+    except FileNotFoundError as e:
+        return jsonify({"error": str(e)}), 404
+
+    scores_list = raw_predictions.get("paragraph_scores", [])
+    original_snippets = conv_data["original_snippets"]
+    original_scores = unmerge_scores(
+        scores_list,
+        conv_data["merge_mapping"],
+        len(original_snippets),
+    )
+
+    scores_for_grouping = [
+        {"paragraph_index": s["snippet_index"], "score": s["score"]}
+        for s in original_scores
+    ]
+    groups = group_above_threshold(
+        scores_for_grouping, threshold, len(original_snippets),
+    )
+
+    if not groups:
+        return jsonify({"error": "No snippets above threshold"}), 400
+
+    prompt = build_span_prompt(groups, original_snippets)
+
+    try:
+        raw_result = call_openai_spans(prompt)
+    except Exception as e:
+        return jsonify({"error": f"OpenAI API error: {e}"}), 502
+
+    highlights = resolve_all_highlights(
+        raw_result.get("highlights", []),
+        original_snippets,
+    )
+
+    payload = {
+        "conversation_id": conversation_id,
+        "source_predictions_file": predictions_file,
+        "threshold": threshold,
+        "highlights": highlights,
+    }
+    saved_filename = save_span_predictions(conversation_id, payload)
+
+    return jsonify({
+        "filename": saved_filename,
+        "highlights": highlights,
+    })
+
+
+@app.route(
+    "/api/conversations/<conversation_id>/span-predictions",
+    methods=["GET"],
+)
+def api_list_span_predictions(conversation_id: str):
+    files = list_span_prediction_files(conversation_id)
+    return jsonify(files)
+
+
+@app.route(
+    "/api/conversations/<conversation_id>/span-predictions/<filename>",
+    methods=["GET"],
+)
+def api_get_span_prediction(conversation_id: str, filename: str):
+    try:
+        data = load_span_prediction_file(conversation_id, filename)
+    except FileNotFoundError as e:
+        return jsonify({"error": str(e)}), 404
+    return jsonify(data)
 
 
 if __name__ == "__main__":

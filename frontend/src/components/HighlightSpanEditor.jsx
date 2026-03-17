@@ -1,25 +1,26 @@
 import React from 'react';
 
 /**
- * Scaffolded component for second-pass span-level highlight editing.
- *
- * Future functionality:
- * - Render precise highlight spans within snippet text
- * - Drag handles for adjusting span start/end boundaries
- * - "Add new highlight" mode (mousedown + drag to select text)
- * - Integration with a second LLM pass that returns character-level offsets
+ * Summary panel for the current span-level highlight session.
+ * Displayed in the sidebar showing progress counts.
  */
-export default function HighlightSpanEditor({ snippets, highlights }) {
+export default function HighlightSpanEditor({ highlights }) {
+  if (!highlights || highlights.length === 0) return null;
+
+  const pending = highlights.filter((h) => h.status === 'pending').length;
+  const accepted = highlights.filter((h) => h.status === 'accepted').length;
+  const rejected = highlights.filter((h) => h.status === 'rejected').length;
+
   return (
-    <div className="span-editor-placeholder">
-      <p>
-        Span-level highlight editing will be available after the second-pass
-        LLM refinement is implemented.
-      </p>
-      <p style={{ marginTop: 8, fontSize: '0.8rem' }}>
-        This mode will allow you to view and adjust precise highlight
-        boundaries, add new highlights, and accept or reject each one.
-      </p>
+    <div className="span-editor-summary">
+      <div className="span-count">
+        <strong>{highlights.length}</strong> highlight{highlights.length !== 1 ? 's' : ''}
+      </div>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        <span className="span-stat pending-stat">{pending} pending</span>
+        <span className="span-stat accepted-stat">{accepted} accepted</span>
+        <span className="span-stat rejected-stat">{rejected} rejected</span>
+      </div>
     </div>
   );
 }

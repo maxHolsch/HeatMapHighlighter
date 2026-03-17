@@ -9,6 +9,7 @@
   --accent: hsl(270, 65%, 55%);
   --accent-light: hsl(270, 65%, 95%);
   --radius: 6px;
+  --sidebar-width: 280px;
 }
 
 * {
@@ -26,41 +27,87 @@ body {
 }
 
 .app {
-  max-width: 1100px;
+  min-height: 100vh;
+  padding: 0 24px;
+  max-width: 1400px;
   margin: 0 auto;
-  padding: 24px 32px 64px;
 }
 
 /* ---- Header ---- */
 .app-header {
-  margin-bottom: 24px;
-  padding-bottom: 12px;
+  padding: 16px 0 12px;
+  margin-bottom: 16px;
   border-bottom: 2px solid var(--accent);
 }
 
 .app-header h1 {
-  font-size: 1.6rem;
+  font-size: 1.5rem;
   font-weight: 700;
   color: var(--accent);
 }
 
-/* ---- Control Panel ---- */
-.control-panel {
+/* ---- Two-Column Layout ---- */
+.app-body {
+  display: flex;
+  gap: 20px;
+  align-items: flex-start;
+}
+
+/* ---- Sidebar ---- */
+.sidebar {
+  width: var(--sidebar-width);
+  min-width: var(--sidebar-width);
+  position: sticky;
+  top: 16px;
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
   background: var(--surface-color);
   border: 1px solid var(--border-color);
   border-radius: var(--radius);
-  padding: 20px;
-  margin-bottom: 24px;
+  padding: 16px;
 }
 
-.control-row {
+.sidebar-section {
+  margin-bottom: 14px;
+}
+
+.sidebar-section:last-child {
+  margin-bottom: 0;
+}
+
+.sidebar-divider {
+  height: 1px;
+  background: var(--border-color);
+  margin: 14px 0;
+}
+
+.sidebar-actions {
   display: flex;
-  gap: 16px;
-  align-items: flex-end;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.btn-full {
+  width: 100%;
+  justify-content: center;
+}
+
+/* ---- Main Content ---- */
+.main-content {
+  flex: 1;
+  min-width: 0;
+  padding-bottom: 64px;
+}
+
+.prompt-panel {
+  background: var(--surface-color);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  padding: 16px;
   margin-bottom: 16px;
 }
 
+/* ---- Control Group (selectors etc.) ---- */
 .control-group {
   display: flex;
   flex-direction: column;
@@ -68,29 +115,25 @@ body {
 }
 
 .control-group label {
-  font-size: 0.8rem;
+  font-size: 0.78rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--text-secondary);
 }
 
-.control-group select,
-.control-group input[type='range'] {
-  font-size: 0.9rem;
-  padding: 6px 10px;
+.control-group select {
+  font-size: 0.85rem;
+  padding: 6px 8px;
   border: 1px solid var(--border-color);
   border-radius: var(--radius);
   background: var(--surface-color);
-}
-
-.control-group select {
-  min-width: 220px;
+  width: 100%;
 }
 
 /* ---- Prompt Editor ---- */
 .prompt-editor {
-  margin-top: 8px;
+  margin-top: 0;
 }
 
 .prompt-editor-header {
@@ -119,8 +162,8 @@ body {
 
 .prompt-textarea {
   width: 100%;
-  min-height: 180px;
-  max-height: 400px;
+  min-height: 160px;
+  max-height: 360px;
   font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
   font-size: 0.82rem;
   line-height: 1.5;
@@ -142,8 +185,8 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 18px;
-  font-size: 0.88rem;
+  padding: 8px 16px;
+  font-size: 0.84rem;
   font-weight: 600;
   border: none;
   border-radius: var(--radius);
@@ -183,11 +226,11 @@ body {
   background: hsl(0, 60%, 45%);
 }
 
-/* ---- Threshold ---- */
+/* ---- Threshold (sidebar layout) ---- */
 .threshold-controls {
   display: flex;
-  align-items: flex-end;
-  gap: 16px;
+  flex-direction: column;
+  gap: 12px;
 }
 
 .threshold-slider-group {
@@ -197,7 +240,7 @@ body {
 }
 
 .threshold-slider-group label {
-  font-size: 0.8rem;
+  font-size: 0.78rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -211,7 +254,7 @@ body {
 }
 
 .threshold-slider-row input[type='range'] {
-  width: 140px;
+  flex: 1;
   accent-color: var(--accent);
 }
 
@@ -229,7 +272,7 @@ body {
 }
 
 .mode-toggle-group label {
-  font-size: 0.8rem;
+  font-size: 0.78rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -237,8 +280,8 @@ body {
 }
 
 .mode-toggle-btn {
-  padding: 6px 14px;
-  font-size: 0.82rem;
+  padding: 6px 12px;
+  font-size: 0.8rem;
   font-weight: 600;
   border: 1px solid var(--border-color);
   border-radius: var(--radius);
@@ -264,13 +307,13 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 12px 18px;
-  margin-bottom: 16px;
+  padding: 10px 16px;
+  margin-bottom: 12px;
   background: hsl(0, 70%, 96%);
   border: 1px solid hsl(0, 55%, 75%);
   border-radius: var(--radius);
   color: hsl(0, 55%, 35%);
-  font-size: 0.9rem;
+  font-size: 0.88rem;
   line-height: 1.45;
 }
 
@@ -295,6 +338,38 @@ body {
   background: hsl(0, 55%, 90%);
 }
 
+/* ---- Success Banner ---- */
+.success-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
+  margin-bottom: 12px;
+  background: hsl(140, 55%, 94%);
+  border: 1px solid hsl(140, 55%, 70%);
+  border-radius: var(--radius);
+  color: hsl(140, 55%, 25%);
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+
+.success-dismiss {
+  flex-shrink: 0;
+  padding: 4px 12px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  background: transparent;
+  border: 1px solid hsl(140, 55%, 70%);
+  border-radius: 4px;
+  color: hsl(140, 55%, 30%);
+  cursor: pointer;
+}
+
+.success-dismiss:hover {
+  background: hsl(140, 55%, 88%);
+}
+
 /* ---- Loading ---- */
 .loading-indicator {
   text-align: center;
@@ -303,7 +378,7 @@ body {
   color: var(--text-secondary);
 }
 
-/* ---- Detecting Overlay ---- */
+/* ---- Detecting / Saving Overlay ---- */
 .detecting-overlay {
   position: fixed;
   inset: 0;
@@ -357,7 +432,17 @@ body {
   color: var(--text-secondary);
 }
 
-/* ---- Preview Modal ---- */
+.save-success-icon {
+  font-size: 2.2rem;
+  color: hsl(140, 55%, 40%);
+  margin-bottom: 14px;
+}
+
+.save-success-text {
+  color: hsl(140, 55%, 30%);
+}
+
+/* ---- Modals ---- */
 .modal-overlay {
   position: fixed;
   inset: 0;
@@ -377,6 +462,10 @@ body {
   display: flex;
   flex-direction: column;
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+}
+
+.modal-sm {
+  max-width: 480px;
 }
 
 .modal-header {
@@ -427,7 +516,7 @@ body {
   background: var(--surface-color);
   border: 1px solid var(--border-color);
   border-radius: var(--radius);
-  padding: 28px 32px;
+  padding: 24px 28px;
 }
 
 .speaker-label {
@@ -475,34 +564,128 @@ body {
   margin-bottom: 4px;
 }
 
-/* ---- Highlight Span Editor (scaffolded) ---- */
-.span-editor-placeholder {
-  text-align: center;
-  padding: 40px 20px;
-  color: var(--text-secondary);
-  font-style: italic;
-  border: 2px dashed var(--border-color);
-  border-radius: var(--radius);
-  margin-top: 16px;
+/* ---- Highlight Span Editor Summary (sidebar) ---- */
+.span-editor-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.82rem;
 }
 
-/* ---- Highlight Action Buttons (scaffolded) ---- */
+.span-count {
+  font-size: 0.85rem;
+}
+
+.span-stat {
+  padding: 2px 10px;
+  border-radius: 12px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  display: inline-block;
+}
+
+.pending-stat {
+  background: hsl(45, 90%, 90%);
+  color: hsl(45, 80%, 30%);
+}
+
+.accepted-stat {
+  background: hsl(140, 55%, 90%);
+  color: hsl(140, 55%, 30%);
+}
+
+.rejected-stat {
+  background: hsl(0, 55%, 92%);
+  color: hsl(0, 55%, 40%);
+}
+
+/* ---- Highlight Spans ---- */
+.highlight-span {
+  position: relative;
+  border-radius: 3px;
+  padding: 1px 0;
+  transition: background 0.15s, opacity 0.15s;
+}
+
+.highlight-span.pending {
+  background: hsl(45, 92%, 82%);
+}
+
+.highlight-span.accepted {
+  background: hsl(140, 55%, 85%);
+}
+
+.highlight-span.rejected {
+  background: hsl(0, 20%, 92%);
+  opacity: 0.5;
+  text-decoration: line-through;
+}
+
+.highlight-text {
+  position: relative;
+  z-index: 1;
+}
+
+/* ---- Drag Handles ---- */
+.drag-handle {
+  display: inline-block;
+  width: 3px;
+  height: 1.2em;
+  vertical-align: text-bottom;
+  cursor: col-resize;
+  background: hsl(270, 65%, 55%);
+  border-radius: 2px;
+  opacity: 0;
+  transition: opacity 0.15s;
+  position: relative;
+  z-index: 2;
+}
+
+.highlight-span:hover .drag-handle {
+  opacity: 0.7;
+}
+
+.drag-handle:hover {
+  opacity: 1 !important;
+  background: hsl(270, 65%, 40%);
+}
+
+.drag-handle-left {
+  margin-right: 1px;
+}
+
+.drag-handle-right {
+  margin-left: 1px;
+}
+
+/* ---- Add Highlight Mode ---- */
+.add-highlight-mode .snippet-block-final {
+  cursor: text;
+  user-select: text;
+}
+
+.snippet-block-final {
+  user-select: none;
+}
+
+/* ---- Highlight Action Buttons ---- */
 .highlight-actions {
   display: inline-flex;
   gap: 4px;
-  margin-left: 8px;
+  margin-left: 6px;
   vertical-align: middle;
 }
 
 .highlight-actions .action-btn {
   padding: 2px 8px;
-  font-size: 0.75rem;
+  font-size: 0.72rem;
   font-weight: 600;
   border: 1px solid var(--border-color);
   border-radius: 4px;
   cursor: pointer;
   background: var(--surface-color);
   transition: background 0.12s;
+  line-height: 1.4;
 }
 
 .highlight-actions .action-btn.accept {
@@ -531,6 +714,15 @@ body {
   background: #eee;
 }
 
+.highlight-actions .action-btn.delete {
+  color: hsl(0, 55%, 45%);
+  border-color: hsl(0, 40%, 75%);
+}
+
+.highlight-actions .action-btn.delete:hover {
+  background: hsl(0, 55%, 92%);
+}
+
 .accepted-badge {
   display: inline-block;
   padding: 1px 8px;
@@ -540,5 +732,15 @@ body {
   background: hsl(140, 55%, 90%);
   color: hsl(140, 55%, 30%);
   border-radius: 4px;
-  margin-left: 6px;
+}
+
+.rejected-badge {
+  display: inline-block;
+  padding: 1px 8px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  background: hsl(0, 40%, 92%);
+  color: hsl(0, 40%, 40%);
+  border-radius: 4px;
 }

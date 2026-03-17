@@ -1,23 +1,15 @@
 import React from 'react';
 
-/**
- * Scaffolded accept/reject buttons for individual highlight spans.
- *
- * States: pending -> accepted | rejected
- * Accepted highlights show an "undo" button to revert.
- *
- * This component will be integrated into HighlightSpanEditor once the
- * second-pass LLM refinement is implemented.
- */
 export default function HighlightActionButtons({
   status = 'pending',
   onAccept,
   onReject,
   onUndo,
+  onDelete,
 }) {
   if (status === 'accepted') {
     return (
-      <span className="highlight-actions">
+      <span className="highlight-actions" onClick={(e) => e.stopPropagation()}>
         <span className="accepted-badge">Accepted</span>
         <button className="action-btn undo" onClick={onUndo}>
           Undo
@@ -28,16 +20,22 @@ export default function HighlightActionButtons({
 
   if (status === 'rejected') {
     return (
-      <span className="highlight-actions">
+      <span className="highlight-actions" onClick={(e) => e.stopPropagation()}>
+        <span className="rejected-badge">Rejected</span>
         <button className="action-btn undo" onClick={onUndo}>
           Undo
         </button>
+        {onDelete && (
+          <button className="action-btn delete" onClick={onDelete}>
+            Delete
+          </button>
+        )}
       </span>
     );
   }
 
   return (
-    <span className="highlight-actions">
+    <span className="highlight-actions" onClick={(e) => e.stopPropagation()}>
       <button className="action-btn accept" onClick={onAccept}>
         Accept
       </button>

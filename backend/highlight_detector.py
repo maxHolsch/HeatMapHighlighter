@@ -10,7 +10,7 @@ from typing import Dict, List, Optional
 
 from openai import OpenAI
 
-from config import OPENAI_MODEL, PREDICTIONS_CACHE_DIR
+from config import OPENAI_SNIPPET_MODEL, PREDICTIONS_CACHE_DIR
 
 JSON_SCHEMA = {
     "name": "paragraph_scores",
@@ -46,7 +46,7 @@ def call_openai(
     Send the assembled prompt to the OpenAI API and return the parsed
     paragraph_scores dict.
     """
-    model = model or OPENAI_MODEL
+    model = model or OPENAI_SNIPPET_MODEL
     client = OpenAI()
     response = client.chat.completions.parse(
         model=model,

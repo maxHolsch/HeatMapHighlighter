@@ -64,3 +64,29 @@ export async function saveHighlights(conversationId, highlights) {
 export async function fetchDefaultPrompt() {
   return request(`${BASE}/default-prompt`);
 }
+
+export async function runDetectSpans(conversationId, predictionsFile, threshold) {
+  return request(
+    `${BASE}/conversations/${conversationId}/detect-spans`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        predictions_file: predictionsFile,
+        threshold,
+      }),
+    }
+  );
+}
+
+export async function fetchSpanPredictionFiles(conversationId) {
+  return request(
+    `${BASE}/conversations/${conversationId}/span-predictions`
+  );
+}
+
+export async function fetchSpanPrediction(conversationId, filename) {
+  return request(
+    `${BASE}/conversations/${conversationId}/span-predictions/${filename}`
+  );
+}

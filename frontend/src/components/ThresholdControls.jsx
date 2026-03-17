@@ -5,6 +5,7 @@ export default function ThresholdControls({
   onChange,
   viewMode,
   onViewModeChange,
+  spanHighlightsAvailable = false,
 }) {
   return (
     <div className="threshold-controls">
@@ -29,16 +30,22 @@ export default function ThresholdControls({
           <button
             className={`mode-toggle-btn ${viewMode === 'heatmap' ? 'active' : ''}`}
             onClick={() => onViewModeChange('heatmap')}
+            style={{ flex: 1 }}
           >
             Heat Map
           </button>
           <button
             className={`mode-toggle-btn ${viewMode === 'final' ? 'active' : ''}`}
             onClick={() => onViewModeChange('final')}
-            disabled
-            title="Available after second-pass span detection"
+            disabled={!spanHighlightsAvailable}
+            title={
+              spanHighlightsAvailable
+                ? 'View precise highlight spans'
+                : 'Run span-level detection first'
+            }
+            style={{ flex: 1 }}
           >
-            Final Highlights
+            Predicted Spans
           </button>
         </div>
       </div>
