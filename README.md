@@ -1,52 +1,130 @@
-# llm-auto-highlighter
+# LLM-based Automatic Highlighting for Conversations
 
 An interactive tool for detecting, refining, and reviewing highlights in conversation transcripts using LLM-based scoring. Built with a Flask backend and a React (Vite) frontend.
 
 The tool takes raw conversation transcript JSONs taken from the [Cortico API](https://api.cortico.ai/docs#overview), cleans and formats them, and runs a two-stage LLM pipeline:
 
-1. **Snippet-level scoring** -- An OpenAI model assigns each paragraph-level snippet a 0-10 highlight score with reasoning. Results are visualized as a heat map.
-2. **Span-level refinement** -- A second LLM pass takes the above-threshold snippets and identifies precise start/end boundaries within each snippet, producing exact character-level highlight spans for human review.
+1. **Snippet-level scoring**: An OpenAI model assigns each paragraph-level snippet a 0-10 highlight score with reasoning. Results are visualized as a heat map.
+2. **Span-level refinement**: A second LLM pass takes the above-threshold snippets and identifies precise start/end boundaries within each snippet, producing exact character-level highlight spans for human review.
 
 ## Features
 
 ### Pass 1: Snippet-level highlight detection
 
-- **Customizable prompt** -- Edit the full prompt template in the UI before running.
-- **Heat map visualization** -- The transcript is rendered with highlighted snippets shaded according to their scores (higher scores produce darker shades).
-- **Threshold slider** -- Interactively adjust the score threshold (1–10) to control which snippets are highlighted.
-- **Reasoning tooltips** -- Hover over any highlighted snippet to see the LLM's reasoning for the score.
-- **Cached predictions** -- Load previously generated prediction files without re-running the LLM.
-- **Snippet merging** -- Short single-sentence snippets are merged before being sent to the LLM, then scores are mapped back to the original un-merged snippets for rendering.
+- **Customizable prompt**: Edit the full prompt template in the UI before running.
+- **Heat map visualization**: The transcript is rendered with highlighted snippets shaded according to their scores (higher scores produce darker shades).
+- **Threshold slider**: Interactively adjust the score threshold (1–10) to control which snippets are highlighted.
+- **Reasoning tooltips**: Hover over any highlighted snippet to see the LLM's reasoning for the score.
+- **Cached predictions**: Load previously generated prediction files without re-running the LLM.
+- **Snippet merging**: Short single-sentence snippets are merged before being sent to the LLM, then scores are mapped back to the original un-merged snippets for rendering.
 
 ### Pass 2: Span-level highlight refinement
 
-- **Span detection** -- Clicking "Get Span-Level Highlights" groups consecutive above-threshold snippets, sends them to a second LLM call, and receives verbatim quoted anchors defining each highlight's start and end. The backend resolves these to exact character offsets (with fuzzy-match fallback).
-- **Cached span predictions** -- Span prediction files are saved per conversation and can be reloaded from a dropdown, bypassing the LLM call entirely.
-- **Final Highlights mode** -- Toggle from Heat Map to Span-Level Highlights view to see only the precise highlighted spans rendered inline within the transcript.
+- **Span detection**: Clicking "Get Span-Level Highlights" groups consecutive above-threshold snippets, sends them to a second LLM call, and receives verbatim quoted anchors defining each highlight's start and end. The backend resolves these to exact character offsets (with fuzzy-match fallback).
+- **Cached span predictions**: Span prediction files are saved per conversation and can be reloaded from a dropdown, bypassing the LLM call entirely.
+- **Final Highlights mode**: Toggle from Heat Map to Span-Level Highlights view to see only the precise highlighted spans rendered inline within the transcript.
 
 ### Human review
 
-- **Accept / Reject** -- Each highlight span has inline Accept and Reject buttons.
-- **Undo** -- Revert an accepted or rejected highlight back to pending.
-- **Accept All** -- Accept all pending highlights in one click.
-- **Drag to adjust boundaries** -- Drag handles at each span boundary to resize the highlight to a word boundary.
-- **Add new highlight** -- Enable "Add New Highlight" mode, then click and drag over any part of the transcript to create a new pending span.
-- **Delete** -- Remove a rejected highlight entirely.
-- **Progress summary** -- The sidebar shows a live count of pending / accepted / rejected highlights.
-- **Complete Highlighting** -- Once all highlights are accepted or rejected, save the accepted ones to a JSON file.
+- **Accept / Reject**: Each highlight span has inline Accept and Reject buttons.
+- **Undo**: Revert an accepted or rejected highlight back to pending.
+- **Accept All**: Accept all pending highlights in one click.
+- **Drag to adjust boundaries**: Drag handles at each span boundary to resize the highlight to a word boundary.
+- **Add new highlight**: Enable "Add New Highlight" mode, then click and drag over any part of the transcript to create a new pending span.
+- **Delete**: Remove a rejected highlight entirely.
+- **Progress summary**: The sidebar shows a live count of pending / accepted / rejected highlights.
+- **Complete Highlighting**: Once all highlights are accepted or rejected, save the accepted ones to a JSON file.
 
 ### Layout
 
 The UI uses a two-column layout:
 
-- **Left sidebar** (sticky) -- All controls: conversation selector, predictions dropdowns, threshold slider, view mode toggle, span action buttons, and highlight summary.
-- **Right main area** -- Prompt editor (collapsible) and the full scrollable transcript viewer.
+- **Left sidebar**: All controls: conversation selector, predictions dropdowns, threshold slider, view mode toggle, span action buttons, and highlight summary.
+- **Right main area**: Prompt editor (collapsible) and the full scrollable transcript viewer.
 
 ## Prerequisites
 
 - Python 3.10+
 - Node.js 18+ and npm
 - An OpenAI API key with access to the configured models
+
+## Setup
+
+### 1. Backend
+
+```bash
+cd backend
+pip install -r requirements.txt
+```
+
+### 2. Frontend
+
+```bash
+cd frontend
+npm install
+```
+
+### 3. Environment
+
+Set your OpenAI API key:
+
+```bash
+export OPENAI_API_KEY="sk-..."
+```
+
+Optionally override the default models:
+
+```bash
+export OPENAI_SNIPPET_MODEL="gpt-5"   # Pass 1 (default: gpt-5-2025-08-07)
+export OPENAI_SPAN_MODEL="gpt-5-mini" # Pass 2 (default: gpt-5-mini)
+```
+
+### 4. Data
+
+The backend expects raw Cortico transcript JSONs at:
+
+```
+<project_root>/cortico_api_transcripts_json/conversation-*.json
+```
+
+The path is configured in `backend/config.py` via `BASE_DIR` and `RAW_TRANSCRIPTS_DIR`. Update these if your data lives elsewhere.
+
+You can download transcript JSON files for conversations from the realtalk@Boston corpus from this [Google Drive link](https://drive.google.com/drive/folders/1nUZpaUcLMpEcn1rHDYlaAQ6Ml83jqEdc?usp=drive_link). You can load in transcripts into the UI visualizer if you unzip ```cortico_api_transcripts_json``` into the project's working directory.
+
+Additionally, if you unzip ```snippet_highlight_scores_cache``` into the working directory, you can access pre-computed snippet-level highlight scores for all conversations. There are 6 score files for each conversation, each conditioned on one of the 6 main themes in the realtalk@Boston thematic codebook. This will allow you to do the heat map visualization in the UI without having to run first-pass snippet-level score prediction (which can be expensive to do at scale). **However, you will still need to run the LLM API call for the second-pass span-level prediction.**
+
+## Running
+
+Start both servers (each in its own terminal):
+
+**Backend** (port 5000):
+
+```bash
+cd backend
+python app.py
+```
+
+**Frontend** (port 3000, proxies `/api` to the backend):
+
+```bash
+cd frontend
+npm run dev
+```
+
+Then open http://localhost:3000 in your browser.
+
+If running on a remote machine, make sure to set up appropriate port forwarding in order to access from your local machine.
+
+## Usage
+
+1. **Select a conversation** from the sidebar dropdown. The transcript and available prediction files load automatically.
+2. **Load snippet-level predictions** from the Predictions File dropdown, or run new detection via the Prompt Editor.
+3. **Adjust the threshold** to control which snippets appear highlighted.
+4. **Hover over highlighted snippets** to read the LLM's reasoning.
+5. **Get span-level highlights**: With a snippet-level prediction loaded, click "Get Span-Level Highlights". Confirm the modal, then wait for the second-pass LLM call to complete. The view switches automatically to Final Highlights mode.
+   - Alternatively, load a previously cached span prediction from the Span Predictions File dropdown.
+6. **Review highlights**: Accept, reject, undo, or drag-adjust each span. Use "Accept All" to accept all at once. Add new spans manually if needed.
+7. **Complete highlighting**: Once all highlights are decided, click "Complete Highlighting" to save accepted spans to `saved_highlights/<conversation-id>/`.
 
 ## Project structure
 
@@ -90,78 +168,6 @@ llm-auto-highlighter/
 │   └── <conversation-id>/
 └── README.md
 ```
-
-## Setup
-
-### 1. Backend
-
-```bash
-cd backend
-pip install -r requirements.txt
-```
-
-### 2. Frontend
-
-```bash
-cd frontend
-npm install
-```
-
-### 3. Environment
-
-Set your OpenAI API key:
-
-```bash
-export OPENAI_API_KEY="sk-..."
-```
-
-Optionally override the default models:
-
-```bash
-export OPENAI_SNIPPET_MODEL="gpt-5"   # Pass 1 (default: gpt-5-2025-08-07)
-export OPENAI_SPAN_MODEL="gpt-5-mini" # Pass 2 (default: gpt-5-mini)
-```
-
-### 4. Data
-
-The backend expects raw Cortico transcript JSONs at:
-
-```
-<project_root>/data/cortico/realtalk_boston/api_orig_transcripts_json/conversation-*.json
-```
-
-The path is configured in `backend/config.py` via `BASE_DIR` and `RAW_TRANSCRIPTS_DIR`. Update these if your data lives elsewhere.
-
-## Running
-
-Start both servers (each in its own terminal):
-
-**Backend** (port 5000):
-
-```bash
-cd backend
-python app.py
-```
-
-**Frontend** (port 3000, proxies `/api` to the backend):
-
-```bash
-cd frontend
-npm run dev
-```
-
-Then open http://localhost:3000 in your browser.
-
-## Usage
-
-1. **Select a conversation** from the sidebar dropdown. The transcript and available prediction files load automatically.
-2. **Load snippet-level predictions** from the Predictions File dropdown, or run new detection via the Prompt Editor.
-3. **Adjust the threshold** to control which snippets appear highlighted.
-4. **Hover over highlighted snippets** to read the LLM's reasoning.
-5. **Get span-level highlights** -- with a snippet-level prediction loaded, click "Get Span-Level Highlights". Confirm the modal, then wait for the second-pass LLM call to complete. The view switches automatically to Final Highlights mode.
-   - Alternatively, load a previously cached span prediction from the Span Predictions File dropdown.
-6. **Review highlights** -- Accept, reject, undo, or drag-adjust each span. Use "Accept All" to accept all at once. Add new spans manually if needed.
-7. **Complete highlighting** -- Once all highlights are decided, click "Complete Highlighting" to save accepted spans to `saved_highlights/<conversation-id>/`.
 
 ## API reference
 
