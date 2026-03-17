@@ -11,36 +11,35 @@ The tool takes raw conversation transcript JSONs taken from the [Cortico API](ht
 
 ### Pass 1: Snippet-level highlight detection
 
-- **Customizable prompt** -- Edit the full prompt template in the UI before running. A preview modal shows the assembled prompt before the API call is made.
-- **Heat map visualization** -- The transcript is rendered with highlighted snippets shaded in purple. Higher scores produce darker shades; snippets below the threshold are unshaded.
+- **Customizable prompt** -- Edit the full prompt template in the UI before running.
+- **Heat map visualization** -- The transcript is rendered with highlighted snippets shaded according to their scores (higher scores produce darker shades).
 - **Threshold slider** -- Interactively adjust the score threshold (1–10) to control which snippets are highlighted.
-- **Reasoning tooltips** -- Hover over any highlighted snippet to see the LLM's reasoning in a cursor-following tooltip.
-- **Cached predictions** -- Load previously generated prediction files without re-running the LLM. Multiple files (e.g. one per theme) are supported per conversation.
+- **Reasoning tooltips** -- Hover over any highlighted snippet to see the LLM's reasoning for the score.
+- **Cached predictions** -- Load previously generated prediction files without re-running the LLM.
 - **Snippet merging** -- Short single-sentence snippets are merged before being sent to the LLM, then scores are mapped back to the original un-merged snippets for rendering.
 
 ### Pass 2: Span-level highlight refinement
 
 - **Span detection** -- Clicking "Get Span-Level Highlights" groups consecutive above-threshold snippets, sends them to a second LLM call, and receives verbatim quoted anchors defining each highlight's start and end. The backend resolves these to exact character offsets (with fuzzy-match fallback).
-- **Confirmation modal** -- Before the API call, a modal shows the number of snippets to be processed and prompts the user to confirm.
 - **Cached span predictions** -- Span prediction files are saved per conversation and can be reloaded from a dropdown, bypassing the LLM call entirely.
-- **Final Highlights mode** -- Toggle from Heat Map to Final Highlights view to see only the precise highlighted spans rendered inline within the transcript.
+- **Final Highlights mode** -- Toggle from Heat Map to Span-Level Highlights view to see only the precise highlighted spans rendered inline within the transcript.
 
 ### Human review
 
-- **Accept / Reject** -- Each highlight span has inline Accept and Reject buttons (styled like inline code review). Accepted spans turn green; rejected spans are dimmed and struck through.
+- **Accept / Reject** -- Each highlight span has inline Accept and Reject buttons.
 - **Undo** -- Revert an accepted or rejected highlight back to pending.
 - **Accept All** -- Accept all pending highlights in one click.
 - **Drag to adjust boundaries** -- Drag handles at each span boundary to resize the highlight to a word boundary.
 - **Add new highlight** -- Enable "Add New Highlight" mode, then click and drag over any part of the transcript to create a new pending span.
 - **Delete** -- Remove a rejected highlight entirely.
 - **Progress summary** -- The sidebar shows a live count of pending / accepted / rejected highlights.
-- **Complete Highlighting** -- Once all highlights are accepted or rejected, save the accepted ones to a JSON file. A confirmation overlay shows the save result.
+- **Complete Highlighting** -- Once all highlights are accepted or rejected, save the accepted ones to a JSON file.
 
 ### Layout
 
 The UI uses a two-column layout:
 
-- **Left sidebar** (sticky) -- All controls: conversation selector, predictions dropdowns, threshold slider, view mode toggle, span action buttons, and highlight summary. Always visible while scrolling the transcript.
+- **Left sidebar** (sticky) -- All controls: conversation selector, predictions dropdowns, threshold slider, view mode toggle, span action buttons, and highlight summary.
 - **Right main area** -- Prompt editor (collapsible) and the full scrollable transcript viewer.
 
 ## Prerequisites
