@@ -10,7 +10,7 @@ from typing import Dict, List, Optional
 
 from openai import OpenAI
 
-from config import OPENAI_SNIPPET_MODEL, PREDICTIONS_CACHE_DIR
+from config import OPENAI_SNIPPET_MODEL, SNIPPET_SCORES_CACHE_DIR
 
 JSON_SCHEMA = {
     "name": "paragraph_scores",
@@ -118,7 +118,7 @@ def save_predictions(
     Save raw LLM predictions to the cache directory with a timestamp filename.
     Returns the filename (not full path).
     """
-    cache_dir = cache_dir or PREDICTIONS_CACHE_DIR
+    cache_dir = cache_dir or SNIPPET_SCORES_CACHE_DIR
     conv_dir = cache_dir / conversation_id
     conv_dir.mkdir(parents=True, exist_ok=True)
 
@@ -134,7 +134,7 @@ def save_predictions(
 
 def list_prediction_files(conversation_id: str) -> List[str]:
     """List all prediction JSON filenames for a conversation."""
-    conv_dir = PREDICTIONS_CACHE_DIR / conversation_id
+    conv_dir = SNIPPET_SCORES_CACHE_DIR / conversation_id
     if not conv_dir.exists():
         return []
     return sorted(p.name for p in conv_dir.glob("*.json"))
@@ -142,7 +142,7 @@ def list_prediction_files(conversation_id: str) -> List[str]:
 
 def load_prediction_file(conversation_id: str, filename: str) -> Dict:
     """Load and return the contents of a prediction JSON file."""
-    path = PREDICTIONS_CACHE_DIR / conversation_id / filename
+    path = SNIPPET_SCORES_CACHE_DIR / conversation_id / filename
     if not path.exists():
         raise FileNotFoundError(f"Prediction file not found: {path}")
     with path.open("r", encoding="utf-8") as f:

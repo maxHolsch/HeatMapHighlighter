@@ -1,4 +1,6 @@
-highlight_predictions_cache/
+snippet_highlight_scores_cache/
+span_highlight_predictions_cache/
+saved_highlights/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

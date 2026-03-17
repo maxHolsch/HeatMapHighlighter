@@ -188,7 +188,7 @@ All configuration is centralized in `backend/config.py`:
 |----------|---------|-------------|
 | `BASE_DIR` | `/home/wjkang/projects/highlight_extraction` | Project root for resolving data paths |
 | `RAW_TRANSCRIPTS_DIR` | `<BASE_DIR>/data/.../api_orig_transcripts_json` | Directory containing raw transcript JSONs |
-| `PREDICTIONS_CACHE_DIR` | `llm-auto-highlighter/highlight_predictions_cache` | Pass 1 prediction cache |
+| `SNIPPET_SCORES_CACHE_DIR` | `llm-auto-highlighter/snippet_highlight_scores_cache` | Pass 1 prediction cache |
 | `SPAN_PREDICTIONS_CACHE_DIR` | `llm-auto-highlighter/span_highlight_predictions_cache` | Pass 2 span prediction cache |
 | `SAVED_HIGHLIGHTS_DIR` | `llm-auto-highlighter/saved_highlights` | Finalized highlight exports |
 | `OPENAI_SNIPPET_MODEL` | `gpt-5-2025-08-07` | Model used for Pass 1 snippet scoring |

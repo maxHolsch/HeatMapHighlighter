@@ -7,8 +7,8 @@ RAW_TRANSCRIPTS_DIR = (
     BASE_DIR / "data" / "cortico" / "realtalk_boston" / "api_orig_transcripts_json"
 )
 
-PREDICTIONS_CACHE_DIR = (
-    BASE_DIR / "llm-auto-highlighter" / "highlight_predictions_cache"
+SNIPPET_SCORES_CACHE_DIR = (
+    BASE_DIR / "llm-auto-highlighter" / "snippet_highlight_scores_cache"
 )
 
 SPAN_PREDICTIONS_CACHE_DIR = (
