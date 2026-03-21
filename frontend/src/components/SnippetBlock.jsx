@@ -1,24 +1,12 @@
 import React, { useCallback, useRef } from 'react';
 import HighlightActionButtons from './HighlightActionButtons';
+import { snapToWordBoundary, charOffsetFromPoint } from '../utils/textUtils';
 
 function getHeatmapColor(score, threshold) {
   if (score < threshold) return 'transparent';
   if (score <= 4) return 'hsl(270, 55%, 93%)';
   if (score <= 7) return 'hsl(270, 60%, 83%)';
   return 'hsl(270, 65%, 72%)';
-}
-
-function snapToWordBoundary(text, charIdx, direction) {
-  if (charIdx <= 0) return 0;
-  if (charIdx >= text.length) return text.length;
-  if (direction === 'start') {
-    let i = charIdx;
-    while (i > 0 && text[i - 1] !== ' ') i--;
-    return i;
-  }
-  let i = charIdx;
-  while (i < text.length && text[i] !== ' ') i++;
-  return i;
 }
 
 function getStatusClass(status) {
@@ -107,7 +95,7 @@ export default React.memo(function SnippetBlock({
   onMouseMove,
   onMouseLeave,
   onHighlightAction,
-  onHighlightUpdate,
+  onDragStart,
   onDeleteHighlight,
   onSelectionComplete,
   selectionStartRef,
@@ -138,21 +126,9 @@ export default React.memo(function SnippetBlock({
       if (!addingHighlight || viewMode !== 'final') return;
       const el = blockRef.current;
       if (!el) return;
-      const range = document.caretRangeFromPoint(e.clientX, e.clientY);
-      if (!range) return;
-      const textNode = range.startContainer;
-      if (textNode.nodeType !== Node.TEXT_NODE) return;
-      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null, false);
-      let charOffset = 0;
-      let node;
-      while ((node = walker.nextNode())) {
-        if (node === textNode) {
-          charOffset += range.startOffset;
-          break;
-        }
-        charOffset += node.textContent.length;
-      }
-      selectionStartRef.current = { snippetIndex: index, charIndex: charOffset };
+      const offset = charOffsetFromPoint(e.clientX, e.clientY, el);
+      if (offset < 0) return;
+      selectionStartRef.current = { snippetIndex: index, charIndex: offset };
     },
     [addingHighlight, viewMode, index, selectionStartRef]
   );
@@ -162,20 +138,8 @@ export default React.memo(function SnippetBlock({
       if (!addingHighlight || viewMode !== 'final' || !selectionStartRef.current) return;
       const el = blockRef.current;
       if (!el) return;
-      const range = document.caretRangeFromPoint(e.clientX, e.clientY);
-      if (!range) return;
-      const textNode = range.startContainer;
-      if (textNode.nodeType !== Node.TEXT_NODE) return;
-      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null, false);
-      let charOffset = 0;
-      let node;
-      while ((node = walker.nextNode())) {
-        if (node === textNode) {
-          charOffset += range.startOffset;
-          break;
-        }
-        charOffset += node.textContent.length;
-      }
+      const charOffset = charOffsetFromPoint(e.clientX, e.clientY, el);
+      if (charOffset < 0) return;
 
       const start = selectionStartRef.current;
       selectionStartRef.current = null;
@@ -202,64 +166,12 @@ export default React.memo(function SnippetBlock({
     [addingHighlight, viewMode, index, snippet, selectionStartRef, onSelectionComplete]
   );
 
-  const handleDragStart = useCallback(
-    (e, highlightId, snippetIdx, side) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const text = snippet.transcript;
-
-      const onMove = (moveEvent) => {
-        const el = blockRef.current;
-        if (!el) return;
-        const range = document.caretRangeFromPoint(moveEvent.clientX, moveEvent.clientY);
-        if (!range) return;
-        const textNode = range.startContainer;
-        if (textNode.nodeType !== Node.TEXT_NODE) return;
-        const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null, false);
-        let charOffset = 0;
-        let node;
-        while ((node = walker.nextNode())) {
-          if (node === textNode) {
-            charOffset += range.startOffset;
-            break;
-          }
-          charOffset += node.textContent.length;
-        }
-        const snapped = snapToWordBoundary(text, charOffset, side);
-        if (onHighlightUpdate) {
-          onHighlightUpdate(highlightId, (prevSpans) => {
-            return prevSpans.map((s) => {
-              if (s.snippet_index !== snippetIdx) return s;
-              const newStart = side === 'start' ? snapped : s.char_start;
-              const newEnd = side === 'end' ? snapped : s.char_end;
-              if (newStart >= newEnd) return s;
-              return {
-                ...s,
-                char_start: newStart,
-                char_end: newEnd,
-                text: text.slice(newStart, newEnd),
-              };
-            });
-          });
-        }
-      };
-
-      const onUp = () => {
-        document.removeEventListener('mousemove', onMove);
-        document.removeEventListener('mouseup', onUp);
-      };
-
-      document.addEventListener('mousemove', onMove);
-      document.addEventListener('mouseup', onUp);
-    },
-    [snippet, onHighlightUpdate]
-  );
-
   if (viewMode === 'final') {
     return (
       <div
         ref={blockRef}
         className="snippet-block snippet-block-final"
+        data-snippet-index={index}
         onMouseDown={handleMouseDown}
         onMouseUp={handleMouseUp}
       >
@@ -268,7 +180,7 @@ export default React.memo(function SnippetBlock({
           highlightSpans,
           onHighlightAction,
           onDeleteHighlight,
-          handleDragStart,
+          onDragStart,
           onSpanMouseMove,
           onSpanMouseLeave,
         )}
@@ -280,6 +192,7 @@ export default React.memo(function SnippetBlock({
     <div
       ref={blockRef}
       className="snippet-block"
+      data-snippet-index={index}
       style={{ background: bgColor }}
       onMouseMove={handleMouseMoveHeatmap}
       onMouseLeave={handleMouseLeaveHeatmap}
