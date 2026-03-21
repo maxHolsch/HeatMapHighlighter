@@ -4,6 +4,8 @@ Assemble the full LLM prompt from a user-provided template and merged snippets.
 
 from typing import Dict, List
 
+from config import MODULAR_PROMPT_TEMPLATE, THEME_CONDITIONING_TEMPLATE
+
 
 def format_snippets_text_only(merged_snippets: List[Dict]) -> str:
     """Format merged snippets into the XML paragraph structure expected by the LLM."""
@@ -65,3 +67,51 @@ def build_preview_prompt(
         )
 
     return filled + "\n\n" + formatted_preview + truncation_note
+
+
+def _assemble_modular_template(
+    highlight_definition: str,
+    conversation_context: str,
+    theme_conditioning: str,
+) -> str:
+    """Fill the modular prompt template with user-provided sections."""
+    template = MODULAR_PROMPT_TEMPLATE
+    template = template.replace("{highlight_definition}", highlight_definition)
+    template = template.replace("{conversation_context}", conversation_context)
+
+    if theme_conditioning and theme_conditioning.strip():
+        theme_block = THEME_CONDITIONING_TEMPLATE.replace(
+            "{theme_description}", theme_conditioning.strip()
+        )
+    else:
+        theme_block = ""
+
+    template = template.replace("{theme_conditioning_instructions}", theme_block)
+    return template
+
+
+def build_modular_prompt(
+    highlight_definition: str,
+    conversation_context: str,
+    theme_conditioning: str,
+    merged_snippets: List[Dict],
+) -> str:
+    """Build the full prompt from modular user-editable components."""
+    template = _assemble_modular_template(
+        highlight_definition, conversation_context, theme_conditioning,
+    )
+    return build_full_prompt(template, merged_snippets)
+
+
+def build_modular_preview_prompt(
+    highlight_definition: str,
+    conversation_context: str,
+    theme_conditioning: str,
+    merged_snippets: List[Dict],
+    preview_count: int = 10,
+) -> str:
+    """Build a truncated modular prompt for preview."""
+    template = _assemble_modular_template(
+        highlight_definition, conversation_context, theme_conditioning,
+    )
+    return build_preview_prompt(template, merged_snippets, preview_count)

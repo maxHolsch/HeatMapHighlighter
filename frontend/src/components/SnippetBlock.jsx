@@ -27,7 +27,7 @@ function getStatusClass(status) {
   return 'highlight-span pending';
 }
 
-function renderSpannedText(snippet, highlightSpans, onHighlightAction, onDeleteHighlight, onDragStart) {
+function renderSpannedText(snippet, highlightSpans, onHighlightAction, onDeleteHighlight, onDragStart, onSpanMouseMove, onSpanMouseLeave) {
   const text = snippet.transcript;
   if (!highlightSpans || highlightSpans.length === 0) {
     return <span>{text}</span>;
@@ -51,7 +51,12 @@ function renderSpannedText(snippet, highlightSpans, onHighlightAction, onDeleteH
 
     if (start < end) {
       segments.push(
-        <span key={`hl-${span.highlightId}-${start}`} className={getStatusClass(span.status)}>
+        <span
+          key={`hl-${span.highlightId}-${start}`}
+          className={getStatusClass(span.status)}
+          onMouseMove={(e) => onSpanMouseMove && onSpanMouseMove(e, span.highlightId)}
+          onMouseLeave={onSpanMouseLeave}
+        >
           <span
             className="drag-handle drag-handle-left"
             onMouseDown={(e) => onDragStart(e, span.highlightId, span.snippet_index, 'start')}
@@ -106,6 +111,8 @@ export default React.memo(function SnippetBlock({
   onDeleteHighlight,
   onSelectionComplete,
   selectionStartRef,
+  onSpanMouseMove,
+  onSpanMouseLeave,
 }) {
   const blockRef = useRef(null);
 
@@ -262,6 +269,8 @@ export default React.memo(function SnippetBlock({
           onHighlightAction,
           onDeleteHighlight,
           handleDragStart,
+          onSpanMouseMove,
+          onSpanMouseLeave,
         )}
       </div>
     );

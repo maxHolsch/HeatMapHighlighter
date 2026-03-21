@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import ConversationSelector from './components/ConversationSelector';
 import PredictionsFileSelector from './components/PredictionsFileSelector';
 import PromptEditor from './components/PromptEditor';
+import ModularPromptEditor from './components/ModularPromptEditor';
 import PreviewModal from './components/PreviewModal';
 import ThresholdControls from './components/ThresholdControls';
 import TranscriptViewer from './components/TranscriptViewer';
@@ -18,27 +19,45 @@ import {
   saveHighlights,
   fetchSpanPredictionFiles,
   fetchSpanPrediction,
+  fetchConfig,
+  fetchPromptComponents,
+  previewModularPrompt,
+  runEndToEndPipeline,
 } from './api';
 
 export default function App() {
+  // --- Config ---
+  const [endToEnd, setEndToEnd] = useState(true);
+  const [configLoaded, setConfigLoaded] = useState(false);
+
+  // --- Common state ---
   const [conversations, setConversations] = useState([]);
   const [selectedConv, setSelectedConv] = useState('');
   const [transcript, setTranscript] = useState(null);
-  const [predictionFiles, setPredictionFiles] = useState([]);
-  const [selectedPredFile, setSelectedPredFile] = useState('');
   const [scores, setScores] = useState(null);
   const [threshold, setThreshold] = useState(5);
+  const [viewMode, setViewMode] = useState('heatmap');
+  const [loading, setLoading] = useState(false);
+  const [detecting, setDetecting] = useState(false);
+  const [detectElapsed, setDetectElapsed] = useState(0);
+  const [error, setError] = useState(null);
+
+  // --- Two-step mode state ---
+  const [predictionFiles, setPredictionFiles] = useState([]);
+  const [selectedPredFile, setSelectedPredFile] = useState('');
   const [promptTemplate, setPromptTemplate] = useState('');
   const [showPreview, setShowPreview] = useState(false);
   const [previewText, setPreviewText] = useState('');
   const [previewMeta, setPreviewMeta] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [detecting, setDetecting] = useState(false);
-  const [detectElapsed, setDetectElapsed] = useState(0);
-  const [viewMode, setViewMode] = useState('heatmap');
-  const [error, setError] = useState(null);
 
-  // Span-level state
+  // --- End-to-end mode state ---
+  const [highlightDefinition, setHighlightDefinition] = useState('');
+  const [conversationContext, setConversationContext] = useState('');
+  const [themeConditioning, setThemeConditioning] = useState('');
+  const [showE2EConfirm, setShowE2EConfirm] = useState(false);
+  const [showModularPreview, setShowModularPreview] = useState(false);
+
+  // --- Span-level state ---
   const [spanHighlights, setSpanHighlights] = useState(null);
   const [spanPredFiles, setSpanPredFiles] = useState([]);
   const [selectedSpanPredFile, setSelectedSpanPredFile] = useState('');
@@ -52,7 +71,22 @@ export default function App() {
 
   useEffect(() => {
     fetchConversations().then(setConversations);
+    fetchConfig()
+      .then((cfg) => {
+        setEndToEnd(cfg.end_to_end);
+        if (cfg.default_threshold) setThreshold(cfg.default_threshold);
+        setConfigLoaded(true);
+      })
+      .catch(() => setConfigLoaded(true));
+
     fetchDefaultPrompt().then((data) => setPromptTemplate(data.prompt_template));
+    fetchPromptComponents()
+      .then((data) => {
+        setHighlightDefinition(data.highlight_definition || '');
+        setConversationContext(data.conversation_context || '');
+        setThemeConditioning(data.theme_conditioning || '');
+      })
+      .catch(() => {});
   }, []);
 
   const startTimer = useCallback(() => {
@@ -68,6 +102,10 @@ export default function App() {
       timerRef.current = null;
     }
   }, []);
+
+  // ----------------------------------------------------------------
+  // Common handlers
+  // ----------------------------------------------------------------
 
   const handleConversationChange = useCallback(async (convId) => {
     setSelectedConv(convId);
@@ -100,6 +138,10 @@ export default function App() {
       setLoading(false);
     }
   }, []);
+
+  // ----------------------------------------------------------------
+  // Two-step mode handlers
+  // ----------------------------------------------------------------
 
   const handlePredictionFileChange = useCallback(
     async (filename) => {
@@ -208,6 +250,68 @@ export default function App() {
     [selectedConv]
   );
 
+  // ----------------------------------------------------------------
+  // End-to-end mode handlers
+  // ----------------------------------------------------------------
+
+  const handleModularPreview = useCallback(async () => {
+    if (!selectedConv) return;
+    setError(null);
+    setLoading(true);
+    try {
+      const data = await previewModularPrompt(selectedConv, {
+        highlight_definition: highlightDefinition,
+        conversation_context: conversationContext,
+        theme_conditioning: themeConditioning,
+      });
+      setPreviewText(data.preview_prompt);
+      setPreviewMeta(data);
+      setShowModularPreview(true);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [selectedConv, highlightDefinition, conversationContext, themeConditioning]);
+
+  const handleRunE2E = useCallback(async () => {
+    if (!selectedConv) return;
+    setShowE2EConfirm(false);
+    setError(null);
+    setSaveMessage(null);
+    setDetecting(true);
+    startTimer();
+    try {
+      const data = await runEndToEndPipeline(selectedConv, {
+        highlight_definition: highlightDefinition,
+        conversation_context: conversationContext,
+        theme_conditioning: themeConditioning,
+      });
+      setScores(data.scores);
+      setSpanHighlights(data.highlights);
+      if (data.highlights && data.highlights.length > 0) {
+        setViewMode('final');
+      }
+      const [files, spanFiles] = await Promise.all([
+        fetchPredictionFiles(selectedConv),
+        fetchSpanPredictionFiles(selectedConv),
+      ]);
+      setPredictionFiles(files);
+      setSpanPredFiles(spanFiles);
+      if (data.snippet_scores_file) setSelectedPredFile(data.snippet_scores_file);
+      if (data.span_predictions_file) setSelectedSpanPredFile(data.span_predictions_file);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      stopTimer();
+      setDetecting(false);
+    }
+  }, [selectedConv, highlightDefinition, conversationContext, themeConditioning, startTimer, stopTimer]);
+
+  // ----------------------------------------------------------------
+  // Span-level highlight handlers (shared)
+  // ----------------------------------------------------------------
+
   const handleHighlightAction = useCallback((highlightId, action) => {
     setSpanHighlights((prev) =>
       prev.map((hl) => {
@@ -284,6 +388,10 @@ export default function App() {
     }
   }, [selectedConv, spanHighlights, transcript]);
 
+  // ----------------------------------------------------------------
+  // Derived state
+  // ----------------------------------------------------------------
+
   const formatElapsed = (seconds) => {
     const m = Math.floor(seconds / 60);
     const s = seconds % 60;
@@ -305,6 +413,12 @@ export default function App() {
     ? scores.filter((s) => s.score >= threshold).length
     : 0;
 
+  if (!configLoaded) return null;
+
+  // ----------------------------------------------------------------
+  // Render
+  // ----------------------------------------------------------------
+
   return (
     <div className="app">
       <header className="app-header">
@@ -320,7 +434,6 @@ export default function App() {
         </div>
       )}
 
-
       <div className="app-body">
         {/* ---- Left sidebar ---- */}
         <aside className="sidebar">
@@ -332,100 +445,177 @@ export default function App() {
             />
           </div>
 
-          <div className="sidebar-section">
-            <PredictionsFileSelector
-              files={predictionFiles}
-              selected={selectedPredFile}
-              onChange={handlePredictionFileChange}
-              disabled={!selectedConv}
-            />
-          </div>
-
-          <div className="sidebar-section">
-            <ThresholdControls
-              threshold={threshold}
-              onChange={setThreshold}
-              viewMode={viewMode}
-              onViewModeChange={setViewMode}
-              spanHighlightsAvailable={hasSpanHighlights}
-            />
-          </div>
-
-          <div className="sidebar-divider" />
-
-          {spanPredFiles.length > 0 && (
-            <div className="sidebar-section">
-              <div className="control-group">
-                <label>Span-Level Predictions</label>
-                <select
-                  value={selectedSpanPredFile}
-                  onChange={(e) => handleSpanPredFileChange(e.target.value)}
-                  disabled={!selectedConv || isDetectingAny}
-                >
-                  <option value="">-- Select span predictions --</option>
-                  {spanPredFiles.map((f) => (
-                    <option key={f} value={f}>{f}</option>
-                  ))}
-                </select>
-              </div>
-            </div>
-          )}
-
-          <div className="sidebar-section sidebar-actions">
-            <button
-              className="btn btn-primary btn-full"
-              onClick={() => setShowSpanConfirm(true)}
-              disabled={!hasScores || !selectedPredFile || isDetectingAny}
-              title={
-                !hasScores
-                  ? 'Load snippet-level predictions first'
-                  : 'Run second-pass LLM to get precise highlight spans'
-              }
-            >
-              Get Span-Level Highlights
-            </button>
-
-            {hasSpanHighlights && viewMode === 'final' && (
-              <>
-                <button
-                  className={`btn btn-full ${addingHighlight ? 'btn-danger' : 'btn-secondary'}`}
-                  onClick={() => setAddingHighlight(!addingHighlight)}
-                >
-                  {addingHighlight ? 'Cancel Adding' : 'Add New Highlight'}
-                </button>
-
-                {hasPending && (
-                  <button
-                    className="btn btn-secondary btn-full"
-                    onClick={handleAcceptAll}
-                  >
-                    Accept All
-                  </button>
-                )}
-              </>
-            )}
-          </div>
-
-          {hasSpanHighlights && viewMode === 'final' && (
+          {endToEnd ? (
+            /* ========== END-TO-END SIDEBAR ========== */
             <>
-              <div className="sidebar-divider" />
+              {(hasScores || hasSpanHighlights) && (
+                <div className="sidebar-section">
+                  <div className="mode-toggle-group">
+                    <label>View Mode</label>
+                    <div style={{ display: 'flex', gap: 4 }}>
+                      <button
+                        className={`mode-toggle-btn ${viewMode === 'heatmap' ? 'active' : ''}`}
+                        onClick={() => setViewMode('heatmap')}
+                        disabled={!hasScores}
+                        style={{ flex: 1 }}
+                      >
+                        Heat Map
+                      </button>
+                      <button
+                        className={`mode-toggle-btn ${viewMode === 'final' ? 'active' : ''}`}
+                        onClick={() => setViewMode('final')}
+                        disabled={!hasSpanHighlights}
+                        style={{ flex: 1 }}
+                      >
+                        Span-Level
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {hasSpanHighlights && viewMode === 'final' && (
+                <>
+                  <div className="sidebar-divider" />
+                  <div className="sidebar-section">
+                    <HighlightSpanEditor highlights={spanHighlights} />
+                  </div>
+
+                  <div className="sidebar-section sidebar-actions">
+                    <button
+                      className={`btn btn-full ${addingHighlight ? 'btn-danger' : 'btn-secondary'}`}
+                      onClick={() => setAddingHighlight(!addingHighlight)}
+                    >
+                      {addingHighlight ? 'Cancel Adding' : 'Add New Highlight'}
+                    </button>
+
+                    {hasPending && (
+                      <button
+                        className="btn btn-secondary btn-full"
+                        onClick={handleAcceptAll}
+                      >
+                        Accept All
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="sidebar-divider" />
+                  <div className="sidebar-section">
+                    <button
+                      className="btn btn-primary btn-full"
+                      onClick={handleCompleteHighlighting}
+                      disabled={!allDecided || saving}
+                      title={
+                        allDecided
+                          ? 'Save all accepted highlights'
+                          : 'Accept or reject all highlights first'
+                      }
+                    >
+                      Save Highlights
+                    </button>
+                  </div>
+                </>
+              )}
+            </>
+          ) : (
+            /* ========== TWO-STEP SIDEBAR ========== */
+            <>
               <div className="sidebar-section">
-                <HighlightSpanEditor highlights={spanHighlights} />
+                <PredictionsFileSelector
+                  files={predictionFiles}
+                  selected={selectedPredFile}
+                  onChange={handlePredictionFileChange}
+                  disabled={!selectedConv}
+                />
               </div>
+
               <div className="sidebar-section">
+                <ThresholdControls
+                  threshold={threshold}
+                  onChange={setThreshold}
+                  viewMode={viewMode}
+                  onViewModeChange={setViewMode}
+                  spanHighlightsAvailable={hasSpanHighlights}
+                />
+              </div>
+
+              <div className="sidebar-divider" />
+
+              {spanPredFiles.length > 0 && (
+                <div className="sidebar-section">
+                  <div className="control-group">
+                    <label>Span-Level Predictions</label>
+                    <select
+                      value={selectedSpanPredFile}
+                      onChange={(e) => handleSpanPredFileChange(e.target.value)}
+                      disabled={!selectedConv || isDetectingAny}
+                    >
+                      <option value="">-- Select span predictions --</option>
+                      {spanPredFiles.map((f) => (
+                        <option key={f} value={f}>{f}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              )}
+
+              <div className="sidebar-section sidebar-actions">
                 <button
                   className="btn btn-primary btn-full"
-                  onClick={handleCompleteHighlighting}
-                  disabled={!allDecided || saving}
+                  onClick={() => setShowSpanConfirm(true)}
+                  disabled={!hasScores || !selectedPredFile || isDetectingAny}
                   title={
-                    allDecided
-                      ? 'Save all accepted highlights'
-                      : 'Accept or reject all highlights first'
+                    !hasScores
+                      ? 'Load snippet-level predictions first'
+                      : 'Run second-pass LLM to get precise highlight spans'
                   }
                 >
-                  Complete Highlighting
+                  Get Span-Level Highlights
                 </button>
+
+                {hasSpanHighlights && viewMode === 'final' && (
+                  <>
+                    <button
+                      className={`btn btn-full ${addingHighlight ? 'btn-danger' : 'btn-secondary'}`}
+                      onClick={() => setAddingHighlight(!addingHighlight)}
+                    >
+                      {addingHighlight ? 'Cancel Adding' : 'Add New Highlight'}
+                    </button>
+
+                    {hasPending && (
+                      <button
+                        className="btn btn-secondary btn-full"
+                        onClick={handleAcceptAll}
+                      >
+                        Accept All
+                      </button>
+                    )}
+                  </>
+                )}
               </div>
+
+              {hasSpanHighlights && viewMode === 'final' && (
+                <>
+                  <div className="sidebar-divider" />
+                  <div className="sidebar-section">
+                    <HighlightSpanEditor highlights={spanHighlights} />
+                  </div>
+                  <div className="sidebar-section">
+                    <button
+                      className="btn btn-primary btn-full"
+                      onClick={handleCompleteHighlighting}
+                      disabled={!allDecided || saving}
+                      title={
+                        allDecided
+                          ? 'Save all accepted highlights'
+                          : 'Accept or reject all highlights first'
+                      }
+                    >
+                      Complete Highlighting
+                    </button>
+                  </div>
+                </>
+              )}
             </>
           )}
         </aside>
@@ -433,13 +623,28 @@ export default function App() {
         {/* ---- Main content ---- */}
         <main className="main-content">
           <div className="prompt-panel">
-            <PromptEditor
-              value={promptTemplate}
-              onChange={setPromptTemplate}
-              onRun={handlePreviewPrompt}
-              disabled={!selectedConv || loading || isDetectingAny}
-              detecting={detecting}
-            />
+            {endToEnd ? (
+              <ModularPromptEditor
+                highlightDefinition={highlightDefinition}
+                conversationContext={conversationContext}
+                themeConditioning={themeConditioning}
+                onHighlightDefinitionChange={setHighlightDefinition}
+                onConversationContextChange={setConversationContext}
+                onThemeConditioningChange={setThemeConditioning}
+                onPreview={handleModularPreview}
+                onRun={() => setShowE2EConfirm(true)}
+                disabled={!selectedConv || loading || isDetectingAny}
+                detecting={detecting}
+              />
+            ) : (
+              <PromptEditor
+                value={promptTemplate}
+                onChange={setPromptTemplate}
+                onRun={handlePreviewPrompt}
+                disabled={!selectedConv || loading || isDetectingAny}
+                detecting={detecting}
+              />
+            )}
           </div>
 
           {loading && !isDetectingAny && (
@@ -475,6 +680,47 @@ export default function App() {
         />
       )}
 
+      {showModularPreview && (
+        <PreviewModal
+          previewText={previewText}
+          meta={previewMeta}
+          onConfirm={() => {
+            setShowModularPreview(false);
+            setShowE2EConfirm(true);
+          }}
+          onCancel={() => setShowModularPreview(false)}
+          detecting={detecting}
+          confirmLabel="Proceed to Run"
+        />
+      )}
+
+      {showE2EConfirm && (
+        <div className="modal-overlay" onClick={() => setShowE2EConfirm(false)}>
+          <div className="modal-content modal-sm" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Run AI-Generated Highlighting</h2>
+            </div>
+            <div className="modal-body">
+              <p>
+                This will trigger an LLM API call to score all snippets in the
+                conversation and then extract precise highlight boundaries.
+              </p>
+              <p style={{ marginTop: 12, color: 'var(--text-secondary)', fontSize: '0.88rem' }}>
+                Approximate time: 4-8 minutes. This will incur API usage costs.
+              </p>
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-secondary" onClick={() => setShowE2EConfirm(false)}>
+                Cancel
+              </button>
+              <button className="btn btn-primary" onClick={handleRunE2E}>
+                Confirm
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showSpanConfirm && (
         <div className="modal-overlay" onClick={() => setShowSpanConfirm(false)}>
           <div className="modal-content modal-sm" onClick={(e) => e.stopPropagation()}>
@@ -508,15 +754,19 @@ export default function App() {
           <div className="detecting-card">
             <div className="detecting-spinner" />
             <div className="detecting-text">
-              {detectingSpans
-                ? 'Running span-level highlight detection...'
-                : 'Running highlight detection...'}
+              {endToEnd && detecting
+                ? 'Running end-to-end highlight detection...'
+                : detectingSpans
+                  ? 'Running span-level highlight detection...'
+                  : 'Running highlight detection...'}
             </div>
             <div className="detecting-elapsed">
               Elapsed: {formatElapsed(detectElapsed)}
             </div>
             <div className="detecting-subtext">
-              This can take 1-3 minutes depending on transcript length.
+              {endToEnd && detecting
+                ? 'This can take 4-8 minutes depending on transcript length.'
+                : 'This can take 1-3 minutes depending on transcript length.'}
             </div>
           </div>
         </div>
@@ -535,7 +785,7 @@ export default function App() {
               </>
             ) : (
               <>
-                <div className="save-success-icon">✓</div>
+                <div className="save-success-icon">&#10003;</div>
                 <div className="detecting-text save-success-text">{saveMessage}</div>
                 <button
                   className="btn btn-secondary"

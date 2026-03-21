@@ -20,7 +20,7 @@ For each highlight span, provide:
 - end_snippet_index: the snippet index where the highlight ends
 - start_quote: the first 5-10 words of the highlight, copied VERBATIM from the transcript
 - end_quote: the last 5-10 words of the highlight, copied VERBATIM from the transcript
-- reasoning: a brief explanation of what makes this a coherent highlight span
+- reasoning: a brief explanation of what makes this full span a meaningful or noteworthy moment
 
 ## Transcript Snippets
 

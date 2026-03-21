@@ -6,7 +6,7 @@ Given snippet-level scores from the first pass, this module:
 2. Builds a theme-agnostic prompt for precise boundary extraction
 3. Calls the OpenAI API to get quoted-anchor span boundaries
 4. Resolves the quoted anchors to per-snippet character offsets
-5. Persists results to span_highlight_predictions_cache/
+5. Persists results to highlight_cache/
 """
 
 import difflib
@@ -17,7 +17,7 @@ from typing import Dict, List, Optional, Tuple
 
 from openai import OpenAI
 
-from config import OPENAI_SPAN_MODEL, SPAN_PREDICTIONS_CACHE_DIR, SPAN_PROMPT_TEMPLATE
+from config import OPENAI_SPAN_MODEL, HIGHLIGHT_CACHE_DIR, SPAN_PROMPT_TEMPLATE
 
 SPAN_JSON_SCHEMA = {
     "name": "highlight_spans",
@@ -281,13 +281,14 @@ def save_span_predictions(
     conversation_id: str,
     data: Dict,
     cache_dir: Optional[Path] = None,
+    ts: Optional[str] = None,
 ) -> str:
     """Save span predictions to cache. Returns the filename."""
-    cache_dir = cache_dir or SPAN_PREDICTIONS_CACHE_DIR
+    cache_dir = cache_dir or HIGHLIGHT_CACHE_DIR
     conv_dir = cache_dir / conversation_id
     conv_dir.mkdir(parents=True, exist_ok=True)
 
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    ts = ts or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     filename = f"spans_{ts}.json"
     output_path = conv_dir / filename
 
@@ -298,16 +299,16 @@ def save_span_predictions(
 
 
 def list_span_prediction_files(conversation_id: str) -> List[str]:
-    """List all span prediction JSON filenames for a conversation."""
-    conv_dir = SPAN_PREDICTIONS_CACHE_DIR / conversation_id
+    """List span prediction filenames for a conversation."""
+    conv_dir = HIGHLIGHT_CACHE_DIR / conversation_id
     if not conv_dir.exists():
         return []
-    return sorted(p.name for p in conv_dir.glob("*.json"))
+    return sorted(p.name for p in conv_dir.glob("spans_*.json"))
 
 
 def load_span_prediction_file(conversation_id: str, filename: str) -> Dict:
     """Load and return the contents of a span prediction JSON file."""
-    path = SPAN_PREDICTIONS_CACHE_DIR / conversation_id / filename
+    path = HIGHLIGHT_CACHE_DIR / conversation_id / filename
     if not path.exists():
         raise FileNotFoundError(f"Span prediction file not found: {path}")
     with path.open("r", encoding="utf-8") as f:

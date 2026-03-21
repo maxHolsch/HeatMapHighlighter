@@ -12,12 +12,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from flask import Flask, jsonify, request  # noqa: E402
 from flask_cors import CORS  # noqa: E402
 
-from config import DEFAULT_PROMPT_TEMPLATE, SAVED_HIGHLIGHTS_DIR  # noqa: E402
+from config import (  # noqa: E402
+    DEFAULT_PROMPT_TEMPLATE,
+    DEFAULT_HIGHLIGHT_DEFINITION,
+    DEFAULT_CONVERSATION_CONTEXT,
+    END_TO_END,
+    DEFAULT_THRESHOLD,
+    SAVED_HIGHLIGHTS_DIR,
+)
 from transcript_processor import (  # noqa: E402
     list_conversations, load_conversation,
 )
 from prompt_builder import (  # noqa: E402
     build_full_prompt, build_preview_prompt,
+    build_modular_prompt, build_modular_preview_prompt,
 )
 from highlight_detector import (  # noqa: E402
     call_openai,
@@ -192,6 +200,140 @@ def api_save_highlights(conversation_id: str):
 @app.route("/api/default-prompt", methods=["GET"])
 def api_default_prompt():
     return jsonify({"prompt_template": DEFAULT_PROMPT_TEMPLATE})
+
+
+# ------------------------------------------------------------------
+# End-to-end pipeline routes
+# ------------------------------------------------------------------
+
+@app.route("/api/config", methods=["GET"])
+def api_config():
+    return jsonify({
+        "end_to_end": END_TO_END,
+        "default_threshold": DEFAULT_THRESHOLD,
+    })
+
+
+@app.route("/api/prompt-components", methods=["GET"])
+def api_prompt_components():
+    return jsonify({
+        "highlight_definition": DEFAULT_HIGHLIGHT_DEFINITION,
+        "conversation_context": DEFAULT_CONVERSATION_CONTEXT,
+        "theme_conditioning": "",
+    })
+
+
+@app.route(
+    "/api/conversations/<conversation_id>/preview-prompt-modular",
+    methods=["POST"],
+)
+def api_preview_prompt_modular(conversation_id: str):
+    body = request.get_json(force=True)
+    highlight_def = body.get("highlight_definition", DEFAULT_HIGHLIGHT_DEFINITION)
+    conv_context = body.get("conversation_context", DEFAULT_CONVERSATION_CONTEXT)
+    theme_cond = body.get("theme_conditioning", "")
+
+    try:
+        conv_data = _get_conversation(conversation_id)
+    except FileNotFoundError as e:
+        return jsonify({"error": str(e)}), 404
+
+    merged = conv_data["merged_snippets"]
+    preview = build_modular_preview_prompt(
+        highlight_def, conv_context, theme_cond, merged, preview_count=10,
+    )
+    full = build_modular_prompt(highlight_def, conv_context, theme_cond, merged)
+
+    return jsonify({
+        "preview_prompt": preview,
+        "full_prompt_length": len(full),
+        "num_merged_snippets": len(merged),
+    })
+
+
+@app.route(
+    "/api/conversations/<conversation_id>/detect-highlights-e2e",
+    methods=["POST"],
+)
+def api_detect_highlights_e2e(conversation_id: str):
+    body = request.get_json(force=True)
+    highlight_def = body.get("highlight_definition", DEFAULT_HIGHLIGHT_DEFINITION)
+    conv_context = body.get("conversation_context", DEFAULT_CONVERSATION_CONTEXT)
+    theme_cond = body.get("theme_conditioning", "")
+
+    try:
+        conv_data = _get_conversation(conversation_id)
+    except FileNotFoundError as e:
+        return jsonify({"error": str(e)}), 404
+
+    merged = conv_data["merged_snippets"]
+    original_snippets = conv_data["original_snippets"]
+    full_prompt = build_modular_prompt(
+        highlight_def, conv_context, theme_cond, merged,
+    )
+
+    # --- Pass 1: snippet scoring ---
+    try:
+        raw_scores = call_openai(full_prompt)
+    except Exception as e:
+        return jsonify({"error": f"OpenAI API error (pass 1): {e}"}), 502
+
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    scores_filename = save_predictions(conversation_id, raw_scores, ts=ts)
+
+    scores_list = raw_scores.get("paragraph_scores", [])
+    original_scores = unmerge_scores(
+        scores_list,
+        conv_data["merge_mapping"],
+        len(original_snippets),
+    )
+
+    # --- Threshold and group ---
+    threshold = DEFAULT_THRESHOLD
+    scores_for_grouping = [
+        {"paragraph_index": s["snippet_index"], "score": s["score"]}
+        for s in original_scores
+    ]
+    groups = group_above_threshold(
+        scores_for_grouping, threshold, len(original_snippets),
+    )
+
+    if not groups:
+        return jsonify({
+            "snippet_scores_file": scores_filename,
+            "span_predictions_file": None,
+            "scores": original_scores,
+            "highlights": [],
+            "threshold": threshold,
+        })
+
+    # --- Pass 2: span extraction ---
+    span_prompt = build_span_prompt(groups, original_snippets)
+    try:
+        raw_spans = call_openai_spans(span_prompt)
+    except Exception as e:
+        return jsonify({"error": f"OpenAI API error (pass 2): {e}"}), 502
+
+    highlights = resolve_all_highlights(
+        raw_spans.get("highlights", []),
+        original_snippets,
+    )
+
+    span_payload = {
+        "conversation_id": conversation_id,
+        "source_predictions_file": scores_filename,
+        "threshold": threshold,
+        "highlights": highlights,
+    }
+    span_filename = save_span_predictions(conversation_id, span_payload, ts=ts)
+
+    return jsonify({
+        "snippet_scores_file": scores_filename,
+        "span_predictions_file": span_filename,
+        "scores": original_scores,
+        "highlights": highlights,
+        "threshold": threshold,
+    })
 
 
 # ------------------------------------------------------------------

@@ -10,7 +10,7 @@ from typing import Dict, List, Optional
 
 from openai import OpenAI
 
-from config import OPENAI_SNIPPET_MODEL, SNIPPET_SCORES_CACHE_DIR
+from config import OPENAI_SNIPPET_MODEL, HIGHLIGHT_CACHE_DIR
 
 JSON_SCHEMA = {
     "name": "paragraph_scores",
@@ -113,16 +113,17 @@ def save_predictions(
     conversation_id: str,
     predictions: Dict,
     cache_dir: Optional[Path] = None,
+    ts: Optional[str] = None,
 ) -> str:
     """
     Save raw LLM predictions to the cache directory with a timestamp filename.
     Returns the filename (not full path).
     """
-    cache_dir = cache_dir or SNIPPET_SCORES_CACHE_DIR
+    cache_dir = cache_dir or HIGHLIGHT_CACHE_DIR
     conv_dir = cache_dir / conversation_id
     conv_dir.mkdir(parents=True, exist_ok=True)
 
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    ts = ts or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     filename = f"predictions_{ts}.json"
     output_path = conv_dir / filename
 
@@ -133,16 +134,16 @@ def save_predictions(
 
 
 def list_prediction_files(conversation_id: str) -> List[str]:
-    """List all prediction JSON filenames for a conversation."""
-    conv_dir = SNIPPET_SCORES_CACHE_DIR / conversation_id
+    """List snippet-score prediction filenames for a conversation."""
+    conv_dir = HIGHLIGHT_CACHE_DIR / conversation_id
     if not conv_dir.exists():
         return []
-    return sorted(p.name for p in conv_dir.glob("*.json"))
+    return sorted(p.name for p in conv_dir.glob("predictions_*.json"))
 
 
 def load_prediction_file(conversation_id: str, filename: str) -> Dict:
     """Load and return the contents of a prediction JSON file."""
-    path = SNIPPET_SCORES_CACHE_DIR / conversation_id / filename
+    path = HIGHLIGHT_CACHE_DIR / conversation_id / filename
     if not path.exists():
         raise FileNotFoundError(f"Prediction file not found: {path}")
     with path.open("r", encoding="utf-8") as f:

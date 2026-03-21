@@ -90,3 +90,33 @@ export async function fetchSpanPrediction(conversationId, filename) {
     `${BASE}/conversations/${conversationId}/span-predictions/${filename}`
   );
 }
+
+export async function fetchConfig() {
+  return request(`${BASE}/config`);
+}
+
+export async function fetchPromptComponents() {
+  return request(`${BASE}/prompt-components`);
+}
+
+export async function previewModularPrompt(conversationId, components) {
+  return request(
+    `${BASE}/conversations/${conversationId}/preview-prompt-modular`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(components),
+    }
+  );
+}
+
+export async function runEndToEndPipeline(conversationId, components) {
+  return request(
+    `${BASE}/conversations/${conversationId}/detect-highlights-e2e`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(components),
+    }
+  );
+}

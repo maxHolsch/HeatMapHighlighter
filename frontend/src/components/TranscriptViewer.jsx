@@ -35,6 +35,7 @@ export default function TranscriptViewer({
   onDeleteHighlight,
 }) {
   const [tooltip, setTooltip] = useState(null);
+  const [spanTooltip, setSpanTooltip] = useState(null);
   const selectionStartRef = useRef(null);
 
   const handleMouseMove = useCallback((e, scoreEntry) => {
@@ -48,6 +49,20 @@ export default function TranscriptViewer({
 
   const handleMouseLeave = useCallback(() => {
     setTooltip(null);
+  }, []);
+
+  const handleSpanMouseMove = useCallback((e, highlightId) => {
+    if (!spanHighlights) return;
+    const hl = spanHighlights.find((h) => h.id === highlightId);
+    if (!hl) return;
+    const reasoning = hl.id.startsWith('hl_user_')
+      ? 'User-created highlight'
+      : hl.reasoning || '';
+    setSpanTooltip({ x: e.clientX, y: e.clientY, reasoning });
+  }, [spanHighlights]);
+
+  const handleSpanMouseLeave = useCallback(() => {
+    setSpanTooltip(null);
   }, []);
 
   const handleSelectionComplete = useCallback(
@@ -73,7 +88,7 @@ export default function TranscriptViewer({
         id,
         spans,
         full_text: spans.map((s) => s.text).join(' '),
-        reasoning: 'Manually added',
+        reasoning: 'User-created highlight',
         status: 'pending',
       });
     },
@@ -124,6 +139,8 @@ export default function TranscriptViewer({
         onDeleteHighlight={onDeleteHighlight}
         onSelectionComplete={handleSelectionComplete}
         selectionStartRef={selectionStartRef}
+        onSpanMouseMove={handleSpanMouseMove}
+        onSpanMouseLeave={handleSpanMouseLeave}
       />
     );
   }
@@ -138,6 +155,13 @@ export default function TranscriptViewer({
         elements
       )}
       {tooltip && <ReasoningTooltip {...tooltip} />}
+      {spanTooltip && (
+        <ReasoningTooltip
+          x={spanTooltip.x}
+          y={spanTooltip.y}
+          reasoning={spanTooltip.reasoning}
+        />
+      )}
     </div>
   );
 }

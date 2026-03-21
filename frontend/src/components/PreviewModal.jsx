@@ -6,6 +6,7 @@ export default function PreviewModal({
   onConfirm,
   onCancel,
   detecting,
+  confirmLabel,
 }) {
   return (
     <div className="modal-overlay" onClick={onCancel}>
@@ -33,7 +34,7 @@ export default function PreviewModal({
             onClick={onConfirm}
             disabled={detecting}
           >
-            {detecting ? 'Detecting...' : 'Run Auto-Highlighting'}
+            {detecting ? 'Detecting...' : (confirmLabel || 'Run Auto-Highlighting')}
           </button>
         </div>
       </div>
