@@ -1,6 +1,6 @@
 # LLM-based Automatic Highlighting for Conversations
 
-An interactive tool for detecting, refining, and reviewing highlights in conversation transcripts using LLM-based scoring. Built with a Flask backend and a React (Vite) frontend.
+An interactive tool for detecting, refining, and reviewing highlights in conversation transcripts using LLM-based scoring. Built with a FastAPI backend and a React (Vite) frontend.
 
 The tool takes raw conversation transcript JSONs taken from the [Cortico API](https://api.cortico.ai/docs#overview), cleans and formats them, and runs a two-stage LLM pipeline:
 
@@ -120,7 +120,11 @@ Start both servers (each in its own terminal):
 ```bash
 cd backend
 python app.py
+# or equivalently:
+uvicorn app:app --reload --port 5000
 ```
+
+FastAPI also serves interactive API documentation at http://localhost:5000/docs (Swagger UI) and http://localhost:5000/redoc (ReDoc).
 
 **Frontend** (port 3000, proxies `/api` to the backend):
 
@@ -160,7 +164,7 @@ If running on a remote machine, make sure to set up appropriate port forwarding 
 ```
 llm-auto-highlighter/
 ├── backend/
-│   ├── app.py                         # Flask app and all API routes
+│   ├── app.py                         # FastAPI app and all API routes
 │   ├── config.py                      # Paths, models, config flags, prompt loading
 │   ├── transcript_processor.py        # Transcript cleaning, snippet merging, index mapping
 │   ├── prompt_builder.py              # Snippet formatting and prompt assembly (standard + modular)
