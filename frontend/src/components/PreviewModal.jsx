@@ -12,7 +12,7 @@ export default function PreviewModal({
     <div className="modal-overlay" onClick={onCancel}>
       <div className="modal-content" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
-          <h2>Prompt Preview</h2>
+          <h2>LLM Prompt Preview</h2>
         </div>
         <div className="modal-body">
           {meta && (

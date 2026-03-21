@@ -34,3 +34,6 @@ with open(_PROMPTS_DIR / "conversation_context_base.md", "r", encoding="utf-8") 
 
 with open(_PROMPTS_DIR / "theme_conditioning_instructions.md", "r", encoding="utf-8") as f:
     THEME_CONDITIONING_TEMPLATE = f.read()
+
+with open(_PROMPTS_DIR / "conditioning_theme_base.md", "r", encoding="utf-8") as f:
+    DEFAULT_THEME_CONDITIONING = f.read()

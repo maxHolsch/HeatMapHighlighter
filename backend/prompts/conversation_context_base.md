@@ -1,1 +1,1 @@
-The conversation you will see was part of a broader group of community-level civic conversations held around the greater Boston area.
+This conversation was part of a broader group of community-level civic conversations held around the greater Boston area.

@@ -16,6 +16,7 @@ from config import (  # noqa: E402
     DEFAULT_PROMPT_TEMPLATE,
     DEFAULT_HIGHLIGHT_DEFINITION,
     DEFAULT_CONVERSATION_CONTEXT,
+    DEFAULT_THEME_CONDITIONING,
     END_TO_END,
     DEFAULT_THRESHOLD,
     SAVED_HIGHLIGHTS_DIR,
@@ -219,7 +220,7 @@ def api_prompt_components():
     return jsonify({
         "highlight_definition": DEFAULT_HIGHLIGHT_DEFINITION,
         "conversation_context": DEFAULT_CONVERSATION_CONTEXT,
-        "theme_conditioning": "",
+        "theme_conditioning": DEFAULT_THEME_CONDITIONING,
     })
 
 

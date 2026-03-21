@@ -29,10 +29,18 @@ export default function ModularPromptEditor({
 }) {
   const [collapsed, setCollapsed] = useState(false);
 
+  const requireHighlightDefinition = (callback) => () => {
+    if (!highlightDefinition || !highlightDefinition.trim()) {
+      alert('The highlight definition field must not be left blank. Please describe what kind of content you are looking to highlight.');
+      return;
+    }
+    callback();
+  };
+
   return (
     <div className="modular-prompt-editor">
       <div className="prompt-editor-header">
-        <h3>Prompt Configuration</h3>
+        <h3>Highlight Configurations</h3>
         <button
           className="prompt-toggle-btn"
           onClick={() => setCollapsed((c) => !c)}
@@ -45,7 +53,7 @@ export default function ModularPromptEditor({
         <>
           <div className="prompt-field">
             <div className="prompt-field-header">
-              <label>What kind of content are you looking to highlight?</label>
+              <label>What kind of content are you looking to highlight? In other words, how are you defining a highlight?</label>
               <HelpTooltip text="Describe the type of moments you want to find. Be specific: mention emotional tone, content themes, or narrative types (e.g., personal stories, insights, disagreements). The more precise your definition, the better the results." />
             </div>
             <textarea
@@ -60,7 +68,7 @@ export default function ModularPromptEditor({
           <div className="prompt-field">
             <div className="prompt-field-header">
               <label>Do you want to provide additional context about this conversation?</label>
-              <HelpTooltip text="Provide background about the conversation setting, participants, or purpose. This helps the model understand the context and produce more relevant highlight scores." />
+              <HelpTooltip text="Provide background about the conversation setting, participants, or purpose. This helps the model understand the context and produce more relevant highlights." />
             </div>
             <textarea
               className="prompt-field-textarea"
@@ -74,29 +82,28 @@ export default function ModularPromptEditor({
           <div className="prompt-field">
             <div className="prompt-field-header">
               <label>Do you want to find content related to a specific topic or theme?</label>
-              <HelpTooltip text="Use this if you want to only find highlights related to a specific topic. For example, you could enter a theme like 'housing affordability' or 'experiences with the healthcare system' to focus the highlight extraction on that subject." />
+              <HelpTooltip text="Fill in this field if you want to find highlights related to a specific topic or theme. For example, you could enter a theme like 'housing affordability' or 'experiences with the healthcare system' to focus the highlight detection on that subject. The more specific and precise your description, the better the results will be." />
             </div>
             <textarea
               className="prompt-field-textarea"
               value={themeConditioning}
               onChange={(e) => onThemeConditioningChange(e.target.value)}
               spellCheck={false}
-              rows={3}
-              placeholder="Leave empty to find highlights across all topics"
+              rows={20}
             />
           </div>
 
           <div className="prompt-actions">
             <button
               className="btn btn-secondary"
-              onClick={onPreview}
+              onClick={requireHighlightDefinition(onPreview)}
               disabled={disabled}
             >
               Preview Full Prompt
             </button>
             <button
               className="btn btn-primary"
-              onClick={onRun}
+              onClick={requireHighlightDefinition(onRun)}
               disabled={disabled}
             >
               {detecting ? 'Detecting...' : 'Get AI-Generated Highlights'}

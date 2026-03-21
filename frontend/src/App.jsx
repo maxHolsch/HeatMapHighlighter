@@ -241,6 +241,15 @@ export default function App() {
         const data = await fetchSpanPrediction(selectedConv, filename);
         setSpanHighlights(data.highlights);
         setViewMode('final');
+
+        if (data.source_predictions_file) {
+          try {
+            const predData = await fetchPrediction(selectedConv, data.source_predictions_file);
+            setScores(predData.scores);
+            setSelectedPredFile(data.source_predictions_file);
+          } catch {
+          }
+        }
       } catch (e) {
         setError(e.message);
       } finally {
@@ -448,6 +457,24 @@ export default function App() {
           {endToEnd ? (
             /* ========== END-TO-END SIDEBAR ========== */
             <>
+              {spanPredFiles.length > 0 && (
+                <div className="sidebar-section">
+                  <div className="control-group">
+                    <label>Cached Highlights</label>
+                    <select
+                      value={selectedSpanPredFile}
+                      onChange={(e) => handleSpanPredFileChange(e.target.value)}
+                      disabled={!selectedConv || isDetectingAny}
+                    >
+                      <option value="">-- Load from cache --</option>
+                      {spanPredFiles.map((f) => (
+                        <option key={f} value={f}>{f}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              )}
+
               {(hasScores || hasSpanHighlights) && (
                 <div className="sidebar-section">
                   <div className="mode-toggle-group">
@@ -690,7 +717,7 @@ export default function App() {
           }}
           onCancel={() => setShowModularPreview(false)}
           detecting={detecting}
-          confirmLabel="Proceed to Run"
+          confirmLabel="Get AI-Generated Highlights"
         />
       )}
 
@@ -698,15 +725,14 @@ export default function App() {
         <div className="modal-overlay" onClick={() => setShowE2EConfirm(false)}>
           <div className="modal-content modal-sm" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
-              <h2>Run AI-Generated Highlighting</h2>
+              <h2>Run AI Highlighting</h2>
             </div>
             <div className="modal-body">
               <p>
-                This will trigger an LLM API call to score all snippets in the
-                conversation and then extract precise highlight boundaries.
+                This will trigger an OpenAI API call to run highlight detection using an LLM.
               </p>
               <p style={{ marginTop: 12, color: 'var(--text-secondary)', fontSize: '0.88rem' }}>
-                Approximate time: 4-8 minutes. This will incur API usage costs.
+                It may take between 4-8 minutes to run depending on the length of the conversation and the number of detected highlights, and will incur API usage costs.
               </p>
             </div>
             <div className="modal-footer">

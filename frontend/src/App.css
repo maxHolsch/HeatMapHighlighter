@@ -828,7 +828,7 @@ body {
   bottom: calc(100% + 8px);
   transform: translateX(-50%);
   z-index: 2000;
-  width: 300px;
+  width: 420px;
   padding: 10px 14px;
   background: hsl(270, 20%, 18%);
   color: #eee;
