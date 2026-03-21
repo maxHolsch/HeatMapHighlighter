@@ -1,5 +1,5 @@
 """
-Flask backend for the interactive conversation highlighting tool.
+FastAPI backend for the interactive conversation highlighting tool.
 """
 
 import json
@@ -7,10 +7,12 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+import uvicorn
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from flask import Flask, jsonify, request  # noqa: E402
-from flask_cors import CORS  # noqa: E402
+from fastapi import FastAPI, HTTPException, Request  # noqa: E402
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 
 from config import (  # noqa: E402
     DEFAULT_PROMPT_TEMPLATE,
@@ -45,10 +47,16 @@ from span_detector import (  # noqa: E402
     save_span_predictions,
 )
 
-app = Flask(__name__)
-CORS(app)
+app = FastAPI()
 
-# In-memory cache so we don't re-clean the same transcript on every request.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 _conversation_cache: dict = {}
 
 
@@ -62,40 +70,37 @@ def _get_conversation(conversation_id: str) -> dict:
 # API routes
 # ------------------------------------------------------------------
 
-@app.route("/api/conversations", methods=["GET"])
+@app.get("/api/conversations")
 def api_list_conversations():
-    return jsonify(list_conversations())
+    return list_conversations()
 
 
-@app.route("/api/conversations/<conversation_id>/transcript", methods=["GET"])
+@app.get("/api/conversations/{conversation_id}/transcript")
 def api_get_transcript(conversation_id: str):
     try:
         data = _get_conversation(conversation_id)
     except FileNotFoundError as e:
-        return jsonify({"error": str(e)}), 404
-    return jsonify(data)
+        raise HTTPException(status_code=404, detail=str(e))
+    return data
 
 
-@app.route("/api/conversations/<conversation_id>/predictions", methods=["GET"])
+@app.get("/api/conversations/{conversation_id}/predictions")
 def api_list_predictions(conversation_id: str):
     files = list_prediction_files(conversation_id)
-    return jsonify(files)
+    return files
 
 
-@app.route(
-    "/api/conversations/<conversation_id>/predictions/<filename>",
-    methods=["GET"],
-)
+@app.get("/api/conversations/{conversation_id}/predictions/{filename}")
 def api_get_prediction(conversation_id: str, filename: str):
     try:
         conv_data = _get_conversation(conversation_id)
     except FileNotFoundError as e:
-        return jsonify({"error": str(e)}), 404
+        raise HTTPException(status_code=404, detail=str(e))
 
     try:
         raw_predictions = load_prediction_file(conversation_id, filename)
     except FileNotFoundError as e:
-        return jsonify({"error": str(e)}), 404
+        raise HTTPException(status_code=404, detail=str(e))
 
     scores_list = raw_predictions.get("paragraph_scores", [])
     original_scores = unmerge_scores(
@@ -103,48 +108,42 @@ def api_get_prediction(conversation_id: str, filename: str):
         conv_data["merge_mapping"],
         len(conv_data["original_snippets"]),
     )
-    return jsonify({
+    return {
         "filename": filename,
         "scores": original_scores,
-    })
+    }
 
 
-@app.route(
-    "/api/conversations/<conversation_id>/preview-prompt",
-    methods=["POST"],
-)
-def api_preview_prompt(conversation_id: str):
-    body = request.get_json(force=True)
+@app.post("/api/conversations/{conversation_id}/preview-prompt")
+async def api_preview_prompt(conversation_id: str, request: Request):
+    body = await request.json()
     prompt_template = body.get("prompt_template", DEFAULT_PROMPT_TEMPLATE)
 
     try:
         conv_data = _get_conversation(conversation_id)
     except FileNotFoundError as e:
-        return jsonify({"error": str(e)}), 404
+        raise HTTPException(status_code=404, detail=str(e))
 
     merged = conv_data["merged_snippets"]
     preview = build_preview_prompt(prompt_template, merged, preview_count=10)
     full = build_full_prompt(prompt_template, merged)
 
-    return jsonify({
+    return {
         "preview_prompt": preview,
         "full_prompt_length": len(full),
         "num_merged_snippets": len(merged),
-    })
+    }
 
 
-@app.route(
-    "/api/conversations/<conversation_id>/detect-highlights",
-    methods=["POST"],
-)
-def api_detect_highlights(conversation_id: str):
-    body = request.get_json(force=True)
+@app.post("/api/conversations/{conversation_id}/detect-highlights")
+async def api_detect_highlights(conversation_id: str, request: Request):
+    body = await request.json()
     prompt_template = body.get("prompt_template", DEFAULT_PROMPT_TEMPLATE)
 
     try:
         conv_data = _get_conversation(conversation_id)
     except FileNotFoundError as e:
-        return jsonify({"error": str(e)}), 404
+        raise HTTPException(status_code=404, detail=str(e))
 
     merged = conv_data["merged_snippets"]
     full_prompt = build_full_prompt(prompt_template, merged)
@@ -152,7 +151,7 @@ def api_detect_highlights(conversation_id: str):
     try:
         raw_result = call_openai(full_prompt)
     except Exception as e:
-        return jsonify({"error": f"OpenAI API error: {e}"}), 502
+        raise HTTPException(status_code=502, detail=f"OpenAI API error: {e}")
 
     saved_filename = save_predictions(conversation_id, raw_result)
 
@@ -163,21 +162,15 @@ def api_detect_highlights(conversation_id: str):
         len(conv_data["original_snippets"]),
     )
 
-    # Invalidate prediction-file list cache (not cached, but clear conv cache
-    # so merge_mapping stays fresh if transcript changes in the future)
-
-    return jsonify({
+    return {
         "filename": saved_filename,
         "scores": original_scores,
-    })
+    }
 
 
-@app.route(
-    "/api/conversations/<conversation_id>/highlights/save",
-    methods=["POST"],
-)
-def api_save_highlights(conversation_id: str):
-    body = request.get_json(force=True)
+@app.post("/api/conversations/{conversation_id}/highlights/save")
+async def api_save_highlights(conversation_id: str, request: Request):
+    body = await request.json()
     highlights = body.get("highlights", [])
 
     conv_dir = SAVED_HIGHLIGHTS_DIR / conversation_id
@@ -195,41 +188,38 @@ def api_save_highlights(conversation_id: str):
     with output_path.open("w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, ensure_ascii=False)
 
-    return jsonify({"filename": filename})
+    return {"filename": filename}
 
 
-@app.route("/api/default-prompt", methods=["GET"])
+@app.get("/api/default-prompt")
 def api_default_prompt():
-    return jsonify({"prompt_template": DEFAULT_PROMPT_TEMPLATE})
+    return {"prompt_template": DEFAULT_PROMPT_TEMPLATE}
 
 
 # ------------------------------------------------------------------
 # End-to-end pipeline routes
 # ------------------------------------------------------------------
 
-@app.route("/api/config", methods=["GET"])
+@app.get("/api/config")
 def api_config():
-    return jsonify({
+    return {
         "end_to_end": END_TO_END,
         "default_threshold": DEFAULT_THRESHOLD,
-    })
+    }
 
 
-@app.route("/api/prompt-components", methods=["GET"])
+@app.get("/api/prompt-components")
 def api_prompt_components():
-    return jsonify({
+    return {
         "highlight_definition": DEFAULT_HIGHLIGHT_DEFINITION,
         "conversation_context": DEFAULT_CONVERSATION_CONTEXT,
         "theme_conditioning": DEFAULT_THEME_CONDITIONING,
-    })
+    }
 
 
-@app.route(
-    "/api/conversations/<conversation_id>/preview-prompt-modular",
-    methods=["POST"],
-)
-def api_preview_prompt_modular(conversation_id: str):
-    body = request.get_json(force=True)
+@app.post("/api/conversations/{conversation_id}/preview-prompt-modular")
+async def api_preview_prompt_modular(conversation_id: str, request: Request):
+    body = await request.json()
     highlight_def = body.get("highlight_definition", DEFAULT_HIGHLIGHT_DEFINITION)
     conv_context = body.get("conversation_context", DEFAULT_CONVERSATION_CONTEXT)
     theme_cond = body.get("theme_conditioning", "")
@@ -237,7 +227,7 @@ def api_preview_prompt_modular(conversation_id: str):
     try:
         conv_data = _get_conversation(conversation_id)
     except FileNotFoundError as e:
-        return jsonify({"error": str(e)}), 404
+        raise HTTPException(status_code=404, detail=str(e))
 
     merged = conv_data["merged_snippets"]
     preview = build_modular_preview_prompt(
@@ -245,19 +235,16 @@ def api_preview_prompt_modular(conversation_id: str):
     )
     full = build_modular_prompt(highlight_def, conv_context, theme_cond, merged)
 
-    return jsonify({
+    return {
         "preview_prompt": preview,
         "full_prompt_length": len(full),
         "num_merged_snippets": len(merged),
-    })
+    }
 
 
-@app.route(
-    "/api/conversations/<conversation_id>/detect-highlights-e2e",
-    methods=["POST"],
-)
-def api_detect_highlights_e2e(conversation_id: str):
-    body = request.get_json(force=True)
+@app.post("/api/conversations/{conversation_id}/detect-highlights-e2e")
+async def api_detect_highlights_e2e(conversation_id: str, request: Request):
+    body = await request.json()
     highlight_def = body.get("highlight_definition", DEFAULT_HIGHLIGHT_DEFINITION)
     conv_context = body.get("conversation_context", DEFAULT_CONVERSATION_CONTEXT)
     theme_cond = body.get("theme_conditioning", "")
@@ -265,7 +252,7 @@ def api_detect_highlights_e2e(conversation_id: str):
     try:
         conv_data = _get_conversation(conversation_id)
     except FileNotFoundError as e:
-        return jsonify({"error": str(e)}), 404
+        raise HTTPException(status_code=404, detail=str(e))
 
     merged = conv_data["merged_snippets"]
     original_snippets = conv_data["original_snippets"]
@@ -277,7 +264,7 @@ def api_detect_highlights_e2e(conversation_id: str):
     try:
         raw_scores = call_openai(full_prompt)
     except Exception as e:
-        return jsonify({"error": f"OpenAI API error (pass 1): {e}"}), 502
+        raise HTTPException(status_code=502, detail=f"OpenAI API error (pass 1): {e}")
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     scores_filename = save_predictions(conversation_id, raw_scores, ts=ts)
@@ -300,20 +287,20 @@ def api_detect_highlights_e2e(conversation_id: str):
     )
 
     if not groups:
-        return jsonify({
+        return {
             "snippet_scores_file": scores_filename,
             "span_predictions_file": None,
             "scores": original_scores,
             "highlights": [],
             "threshold": threshold,
-        })
+        }
 
     # --- Pass 2: span extraction ---
     span_prompt = build_span_prompt(groups, original_snippets)
     try:
         raw_spans = call_openai_spans(span_prompt)
     except Exception as e:
-        return jsonify({"error": f"OpenAI API error (pass 2): {e}"}), 502
+        raise HTTPException(status_code=502, detail=f"OpenAI API error (pass 2): {e}")
 
     highlights = resolve_all_highlights(
         raw_spans.get("highlights", []),
@@ -328,40 +315,37 @@ def api_detect_highlights_e2e(conversation_id: str):
     }
     span_filename = save_span_predictions(conversation_id, span_payload, ts=ts)
 
-    return jsonify({
+    return {
         "snippet_scores_file": scores_filename,
         "span_predictions_file": span_filename,
         "scores": original_scores,
         "highlights": highlights,
         "threshold": threshold,
-    })
+    }
 
 
 # ------------------------------------------------------------------
 # Span-level (second-pass) routes
 # ------------------------------------------------------------------
 
-@app.route(
-    "/api/conversations/<conversation_id>/detect-spans",
-    methods=["POST"],
-)
-def api_detect_spans(conversation_id: str):
-    body = request.get_json(force=True)
+@app.post("/api/conversations/{conversation_id}/detect-spans")
+async def api_detect_spans(conversation_id: str, request: Request):
+    body = await request.json()
     predictions_file = body.get("predictions_file")
     threshold = body.get("threshold", 5)
 
     if not predictions_file:
-        return jsonify({"error": "predictions_file is required"}), 400
+        raise HTTPException(status_code=400, detail="predictions_file is required")
 
     try:
         conv_data = _get_conversation(conversation_id)
     except FileNotFoundError as e:
-        return jsonify({"error": str(e)}), 404
+        raise HTTPException(status_code=404, detail=str(e))
 
     try:
         raw_predictions = load_prediction_file(conversation_id, predictions_file)
     except FileNotFoundError as e:
-        return jsonify({"error": str(e)}), 404
+        raise HTTPException(status_code=404, detail=str(e))
 
     scores_list = raw_predictions.get("paragraph_scores", [])
     original_snippets = conv_data["original_snippets"]
@@ -380,14 +364,14 @@ def api_detect_spans(conversation_id: str):
     )
 
     if not groups:
-        return jsonify({"error": "No snippets above threshold"}), 400
+        raise HTTPException(status_code=400, detail="No snippets above threshold")
 
     prompt = build_span_prompt(groups, original_snippets)
 
     try:
         raw_result = call_openai_spans(prompt)
     except Exception as e:
-        return jsonify({"error": f"OpenAI API error: {e}"}), 502
+        raise HTTPException(status_code=502, detail=f"OpenAI API error: {e}")
 
     highlights = resolve_all_highlights(
         raw_result.get("highlights", []),
@@ -402,32 +386,26 @@ def api_detect_spans(conversation_id: str):
     }
     saved_filename = save_span_predictions(conversation_id, payload)
 
-    return jsonify({
+    return {
         "filename": saved_filename,
         "highlights": highlights,
-    })
+    }
 
 
-@app.route(
-    "/api/conversations/<conversation_id>/span-predictions",
-    methods=["GET"],
-)
+@app.get("/api/conversations/{conversation_id}/span-predictions")
 def api_list_span_predictions(conversation_id: str):
     files = list_span_prediction_files(conversation_id)
-    return jsonify(files)
+    return files
 
 
-@app.route(
-    "/api/conversations/<conversation_id>/span-predictions/<filename>",
-    methods=["GET"],
-)
+@app.get("/api/conversations/{conversation_id}/span-predictions/{filename}")
 def api_get_span_prediction(conversation_id: str, filename: str):
     try:
         data = load_span_prediction_file(conversation_id, filename)
     except FileNotFoundError as e:
-        return jsonify({"error": str(e)}), 404
-    return jsonify(data)
+        raise HTTPException(status_code=404, detail=str(e))
+    return data
 
 
 if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+    uvicorn.run("app:app", host="0.0.0.0", port=5000, reload=True)
