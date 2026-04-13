@@ -4,26 +4,26 @@ An interactive tool for detecting, refining, and reviewing highlights in convers
 
 The tool takes raw conversation transcript JSONs taken from the [Cortico API](https://api.cortico.ai/docs#overview), cleans and formats them, and runs a two-stage LLM pipeline:
 
-1. **Snippet-level scoring**: An OpenAI model assigns each paragraph-level snippet a 0-10 highlight score with reasoning. Results are visualized as a heat map.
-2. **Span-level refinement**: A second LLM pass takes the above-threshold snippets and identifies precise start/end boundaries within each snippet, producing exact character-level highlight spans for human review.
+1. **Snippet-level scoring**: An LLM (using the OpenAI API) assigns each paragraph-level snippet a 0-10 highlight score with reasoning. Results can be visualized as a heat map.
+2. **Span-level refinement**: A second LLM pass takes any snippets scoring above a threshold and identifies precise start/end boundaries within each snippet, producing exact character-level highlight spans for human review.
 
 ## Features
 
 ### End-to-end pipeline (default mode)
 
-The default mode runs both LLM passes in a single click. Select a conversation, configure the prompt fields, and click **Get AI-Generated Highlights** to get final span-level highlights directly. A confirmation modal reminds you an API call will be made (approximate time: 4–8 minutes).
+The default mode runs both LLM passes in a single click. Select a conversation, configure the prompt fields, and click **Get AI-Generated Highlights** to get final span-level highlights directly.
 
 After the pipeline completes, the view switches to span-level mode automatically. You can toggle back to heat map mode at any time to inspect the snippet-level scores and reasoning from Pass 1.
 
 ### Modular prompt configuration
 
-Instead of editing a raw prompt template, you configure three focused fields:
+The user may configure three fields for instructing the LLM:
 
 - **What kind of content are you looking to highlight?** — Define what constitutes a highlight (e.g., personal stories, emotional moments). Defaults to a general "powerful or noteworthy moments" definition.
 - **Do you want to provide additional context about this conversation?** — Optional background about the conversation setting or participants.
-- **Do you want to find content related to a specific topic or theme?** — Optionally focus highlight extraction on a specific topic. Leave blank to find highlights across all topics.
+- **Do you want to find content related to a specific topic or theme?** — Optionally focus highlight extraction on a specific topic. Leave blank to find general highlights across a broad range of topics.
 
-Each field has a question-mark help icon with hover tooltip guidance. A **Preview Full Prompt** button assembles and displays the full prompt that will be sent to the LLM before committing to the API call.
+A **Preview Full Prompt** button assembles and displays the full prompt that will be sent to the LLM before committing to the API call.
 
 ### Pass 1: Snippet-level highlight detection
 
@@ -35,8 +35,8 @@ Each field has a question-mark help icon with hover tooltip guidance. A **Previe
 ### Pass 2: Span-level highlight refinement
 
 - **Span detection**: Consecutive above-threshold snippets are grouped and sent to a second LLM call. The LLM returns verbatim quoted anchors defining each highlight's start and end; the backend resolves these to exact character offsets (with fuzzy-match fallback).
-- **Reasoning tooltips on spans**: Hover over any highlighted span to see the LLM's reasoning for why that span was identified as a highlight. Reasoning persists even after manually adjusting the span boundaries.
-- **Cached span predictions**: Span prediction files are saved per conversation and can be reloaded, bypassing the LLM call entirely (in two-step mode).
+- **Reasoning tooltips on spans**: Hover over any highlighted span to see the LLM's reasoning for why that span was identified as a highlight.
+- **Cached span predictions**: Span prediction files are saved per conversation and can be reloaded for easy visualization without running the LLM API calls again.
 
 ### Human review
 
@@ -49,16 +49,9 @@ Each field has a question-mark help icon with hover tooltip guidance. A **Previe
 - **Progress summary**: The sidebar shows a live count of pending / accepted / rejected highlights.
 - **Save Highlights**: Once all highlights are accepted or rejected, save the accepted ones to a JSON file.
 
-### Layout
-
-The UI uses a two-column layout:
-
-- **Left sidebar**: Conversation selector, view mode toggle (Heat Map / Span-Level), highlight summary counters, and action buttons.
-- **Right main area**: Modular prompt editor (collapsible) and the full scrollable transcript viewer.
-
 ### Two-step mode
 
-Setting `END_TO_END = False` in `backend/config.py` restores the original two-step UI, where Pass 1 and Pass 2 are triggered separately. This mode exposes the predictions file selector, threshold slider, and span predictions file selector in the sidebar, and uses the legacy full-prompt text editor.
+Setting `END_TO_END = False` in `backend/config.py` restores the original two-step UI, where Pass 1 and Pass 2 are triggered separately. This mode exposes the predictions file selector, threshold slider, and span predictions file selector in the sidebar, and uses a legacy text editor that allows the user to view and edit the full-prompt to the LLM.
 
 ## Prerequisites
 
@@ -123,8 +116,6 @@ python app.py
 # or equivalently:
 uvicorn app:app --reload --port 5000
 ```
-
-FastAPI also serves interactive API documentation at http://localhost:5000/docs (Swagger UI) and http://localhost:5000/redoc (ReDoc).
 
 **Frontend** (port 3000, proxies `/api` to the backend):
 
