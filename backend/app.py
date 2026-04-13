@@ -172,6 +172,7 @@ async def api_detect_highlights(conversation_id: str, request: Request):
 async def api_save_highlights(conversation_id: str, request: Request):
     body = await request.json()
     highlights = body.get("highlights", [])
+    metadata = body.get("metadata", None)
 
     conv_dir = SAVED_HIGHLIGHTS_DIR / conversation_id
     conv_dir.mkdir(parents=True, exist_ok=True)
@@ -184,6 +185,8 @@ async def api_save_highlights(conversation_id: str, request: Request):
         "timestamp": ts,
         "highlights": highlights,
     }
+    if metadata:
+        payload["metadata"] = metadata
 
     with output_path.open("w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, ensure_ascii=False)

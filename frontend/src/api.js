@@ -50,13 +50,13 @@ export async function runDetectHighlights(conversationId, promptTemplate) {
   );
 }
 
-export async function saveHighlights(conversationId, highlights) {
+export async function saveHighlights(conversationId, highlights, metadata = null) {
   return request(
     `${BASE}/conversations/${conversationId}/highlights/save`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ highlights }),
+      body: JSON.stringify({ highlights, metadata }),
     }
   );
 }

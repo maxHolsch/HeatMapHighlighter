@@ -69,6 +69,12 @@ export default function App() {
 
   const timerRef = useRef(null);
 
+  // Metadata tracking refs (end-to-end mode only)
+  const originalSpansRef = useRef({});
+  const rejectedIdsRef = useRef(new Set());
+  const pipelineDurationRef = useRef(null);
+  const editSessionStartRef = useRef(null);
+
   useEffect(() => {
     fetchConversations().then(setConversations);
     fetchConfig()
@@ -119,6 +125,11 @@ export default function App() {
     setViewMode('heatmap');
     setError(null);
     setSaveMessage(null);
+
+    originalSpansRef.current = {};
+    rejectedIdsRef.current = new Set();
+    pipelineDurationRef.current = null;
+    editSessionStartRef.current = null;
 
     if (!convId) return;
 
@@ -242,6 +253,16 @@ export default function App() {
         setSpanHighlights(data.highlights);
         setViewMode('final');
 
+        if (endToEnd && data.highlights && data.highlights.length > 0) {
+          const origMap = {};
+          for (const hl of data.highlights) {
+            origMap[hl.id] = JSON.parse(JSON.stringify(hl.spans));
+          }
+          originalSpansRef.current = origMap;
+          editSessionStartRef.current = Date.now();
+          pipelineDurationRef.current = null;
+        }
+
         if (data.source_predictions_file) {
           try {
             const predData = await fetchPrediction(selectedConv, data.source_predictions_file);
@@ -256,7 +277,7 @@ export default function App() {
         setLoading(false);
       }
     },
-    [selectedConv]
+    [selectedConv, endToEnd]
   );
 
   // ----------------------------------------------------------------
@@ -290,6 +311,7 @@ export default function App() {
     setSaveMessage(null);
     setDetecting(true);
     startTimer();
+    const pipelineStart = Date.now();
     try {
       const data = await runEndToEndPipeline(selectedConv, {
         highlight_definition: highlightDefinition,
@@ -300,6 +322,14 @@ export default function App() {
       setSpanHighlights(data.highlights);
       if (data.highlights && data.highlights.length > 0) {
         setViewMode('final');
+
+        const origMap = {};
+        for (const hl of data.highlights) {
+          origMap[hl.id] = JSON.parse(JSON.stringify(hl.spans));
+        }
+        originalSpansRef.current = origMap;
+        pipelineDurationRef.current = Date.now() - pipelineStart;
+        editSessionStartRef.current = Date.now();
       }
       const [files, spanFiles] = await Promise.all([
         fetchPredictionFiles(selectedConv),
@@ -331,7 +361,11 @@ export default function App() {
         return hl;
       })
     );
-  }, []);
+    if (endToEnd && !highlightId.startsWith('hl_user_')) {
+      if (action === 'reject') rejectedIdsRef.current.add(highlightId);
+      if (action === 'undo') rejectedIdsRef.current.delete(highlightId);
+    }
+  }, [endToEnd]);
 
   const handleAcceptAll = useCallback(() => {
     setSpanHighlights((prev) =>
@@ -362,7 +396,10 @@ export default function App() {
 
   const handleDeleteHighlight = useCallback((highlightId) => {
     setSpanHighlights((prev) => prev.filter((hl) => hl.id !== highlightId));
-  }, []);
+    if (endToEnd && !highlightId.startsWith('hl_user_')) {
+      rejectedIdsRef.current.add(highlightId);
+    }
+  }, [endToEnd]);
 
   const handleCompleteHighlighting = useCallback(async () => {
     if (!selectedConv || !spanHighlights || !transcript) return;
@@ -387,15 +424,52 @@ export default function App() {
         }),
       }));
 
+    let metadata = null;
+    if (endToEnd) {
+      let numBoundaryAdjusted = 0;
+      let numUserCreated = 0;
+      for (const hl of accepted) {
+        if (hl.id.startsWith('hl_user_')) {
+          numUserCreated++;
+          continue;
+        }
+        const orig = originalSpansRef.current[hl.id];
+        if (!orig) continue;
+        const changed =
+          orig.length !== hl.spans.length ||
+          orig.some(
+            (os, i) =>
+              os.snippet_index !== hl.spans[i].snippet_index ||
+              os.char_start !== hl.spans[i].char_start ||
+              os.char_end !== hl.spans[i].char_end
+          );
+        if (changed) numBoundaryAdjusted++;
+      }
+
+      metadata = {
+        num_rejected: rejectedIdsRef.current.size,
+        num_user_created: numUserCreated,
+        num_boundary_adjusted: numBoundaryAdjusted,
+        pipeline_duration_seconds:
+          pipelineDurationRef.current != null
+            ? Math.round(pipelineDurationRef.current / 1000)
+            : null,
+        editing_session_duration_seconds:
+          editSessionStartRef.current != null
+            ? Math.round((Date.now() - editSessionStartRef.current) / 1000)
+            : null,
+      };
+    }
+
     try {
-      const data = await saveHighlights(selectedConv, accepted);
+      const data = await saveHighlights(selectedConv, accepted, metadata);
       setSaveMessage(`Saved ${accepted.length} highlight(s) to ${data.filename}`);
     } catch (e) {
       setError(e.message);
     } finally {
       setSaving(false);
     }
-  }, [selectedConv, spanHighlights, transcript]);
+  }, [selectedConv, spanHighlights, transcript, endToEnd]);
 
   // ----------------------------------------------------------------
   // Derived state
@@ -516,14 +590,14 @@ export default function App() {
                       {addingHighlight ? 'Cancel Adding' : 'Add New Highlight'}
                     </button>
 
-                    {hasPending && (
+                    {/* {hasPending && (
                       <button
                         className="btn btn-secondary btn-full"
                         onClick={handleAcceptAll}
                       >
                         Accept All
                       </button>
-                    )}
+                    )} */}
                   </div>
 
                   <div className="sidebar-divider" />
