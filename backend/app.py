@@ -22,6 +22,8 @@ from config import (  # noqa: E402
     END_TO_END,
     DEFAULT_THRESHOLD,
     SAVED_HIGHLIGHTS_DIR,
+    ensure_data_dirs,
+    require_anthropic_key,
 )
 from transcript_processor import (  # noqa: E402
     list_conversations, load_conversation,
@@ -31,7 +33,7 @@ from prompt_builder import (  # noqa: E402
     build_modular_prompt, build_modular_preview_prompt,
 )
 from highlight_detector import (  # noqa: E402
-    call_openai,
+    call_llm,
     list_prediction_files,
     load_prediction_file,
     save_predictions,
@@ -39,13 +41,23 @@ from highlight_detector import (  # noqa: E402
 )
 from span_detector import (  # noqa: E402
     build_span_prompt,
-    call_openai_spans,
+    call_llm_spans,
     group_above_threshold,
     list_span_prediction_files,
     load_span_prediction_file,
     resolve_all_highlights,
     save_span_predictions,
 )
+
+require_anthropic_key()
+ensure_data_dirs()
+
+# Ensure DB schema exists before any route can hit it.
+from db import get_engine  # noqa: E402
+get_engine()
+
+from routes_corpus import router as corpus_router  # noqa: E402
+from routes_anthology import router as anthology_router  # noqa: E402
 
 app = FastAPI()
 
@@ -56,6 +68,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(corpus_router)
+app.include_router(anthology_router)
 
 _conversation_cache: dict = {}
 
@@ -149,9 +164,9 @@ async def api_detect_highlights(conversation_id: str, request: Request):
     full_prompt = build_full_prompt(prompt_template, merged)
 
     try:
-        raw_result = call_openai(full_prompt)
+        raw_result = call_llm(full_prompt)
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"OpenAI API error: {e}")
+        raise HTTPException(status_code=502, detail=f"Anthropic API error: {e}")
 
     saved_filename = save_predictions(conversation_id, raw_result)
 
@@ -265,9 +280,9 @@ async def api_detect_highlights_e2e(conversation_id: str, request: Request):
 
     # --- Pass 1: snippet scoring ---
     try:
-        raw_scores = call_openai(full_prompt)
+        raw_scores = call_llm(full_prompt)
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"OpenAI API error (pass 1): {e}")
+        raise HTTPException(status_code=502, detail=f"Anthropic API error (pass 1): {e}")
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     scores_filename = save_predictions(conversation_id, raw_scores, ts=ts)
@@ -301,9 +316,9 @@ async def api_detect_highlights_e2e(conversation_id: str, request: Request):
     # --- Pass 2: span extraction ---
     span_prompt = build_span_prompt(groups, original_snippets)
     try:
-        raw_spans = call_openai_spans(span_prompt)
+        raw_spans = call_llm_spans(span_prompt)
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"OpenAI API error (pass 2): {e}")
+        raise HTTPException(status_code=502, detail=f"Anthropic API error (pass 2): {e}")
 
     highlights = resolve_all_highlights(
         raw_spans.get("highlights", []),
@@ -372,9 +387,9 @@ async def api_detect_spans(conversation_id: str, request: Request):
     prompt = build_span_prompt(groups, original_snippets)
 
     try:
-        raw_result = call_openai_spans(prompt)
+        raw_result = call_llm_spans(prompt)
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"OpenAI API error: {e}")
+        raise HTTPException(status_code=502, detail=f"Anthropic API error: {e}")
 
     highlights = resolve_all_highlights(
         raw_result.get("highlights", []),

@@ -1,6 +1,8 @@
 """
-OpenAI API interaction for highlight detection, score un-merging, and
+Anthropic API interaction for highlight detection, score un-merging, and
 prediction persistence.
+
+Uses tool-use with a forced tool_choice to get reliable structured output.
 """
 
 import json
@@ -8,55 +10,54 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from openai import OpenAI
+from config import ANTHROPIC_SNIPPET_MODEL, HIGHLIGHT_CACHE_DIR
+from llm_client import run_structured
 
-from config import OPENAI_SNIPPET_MODEL, HIGHLIGHT_CACHE_DIR
-
-JSON_SCHEMA = {
-    "name": "paragraph_scores",
-    "schema": {
-        "type": "object",
-        "properties": {
-            "paragraph_scores": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "paragraph_index": {"type": "integer"},
-                        "reasoning": {"type": "string"},
-                        "highlight_score": {"type": "integer"},
-                    },
-                    "required": ["paragraph_index", "reasoning", "highlight_score"],
-                    "additionalProperties": False,
+SCORES_TOOL_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "paragraph_scores": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "paragraph_index": {"type": "integer"},
+                    "reasoning": {"type": "string"},
+                    "highlight_score": {"type": "integer"},
                 },
-            }
-        },
-        "required": ["paragraph_scores"],
-        "additionalProperties": False,
+                "required": ["paragraph_index", "reasoning", "highlight_score"],
+            },
+        }
     },
-    "strict": True,
+    "required": ["paragraph_scores"],
 }
 
 
-def call_openai(
+def call_llm(
     prompt_text: str,
     model: Optional[str] = None,
+    max_tokens: int = 16000,
 ) -> Dict:
+    """Pass-1 scoring call. Returns {paragraph_scores: [...]}.
+
+    (Named `call_llm`; the old `call_openai` alias is preserved below for
+    any stray imports.)
     """
-    Send the assembled prompt to the OpenAI API and return the parsed
-    paragraph_scores dict.
-    """
-    model = model or OPENAI_SNIPPET_MODEL
-    client = OpenAI()
-    response = client.chat.completions.parse(
-        model=model,
-        messages=[{"role": "user", "content": prompt_text}],
-        response_format={
-            "type": "json_schema",
-            "json_schema": JSON_SCHEMA,
-        },
+    return run_structured(
+        model=model or ANTHROPIC_SNIPPET_MODEL,
+        prompt=prompt_text,
+        tool_name="record_paragraph_scores",
+        tool_description=(
+            "Record a highlight score (0-10) and one-sentence reasoning for "
+            "every paragraph in the transcript, in order."
+        ),
+        input_schema=SCORES_TOOL_SCHEMA,
+        max_tokens=max_tokens,
     )
-    return json.loads(response.choices[0].message.content)
+
+
+# Backwards-compatible alias; some callers still import `call_openai`.
+call_openai = call_llm
 
 
 def unmerge_scores(

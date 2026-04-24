@@ -15,41 +15,34 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from openai import OpenAI
+from config import ANTHROPIC_SPAN_MODEL, HIGHLIGHT_CACHE_DIR, SPAN_PROMPT_TEMPLATE
+from llm_client import run_structured
 
-from config import OPENAI_SPAN_MODEL, HIGHLIGHT_CACHE_DIR, SPAN_PROMPT_TEMPLATE
-
-SPAN_JSON_SCHEMA = {
-    "name": "highlight_spans",
-    "schema": {
-        "type": "object",
-        "properties": {
-            "highlights": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "start_snippet_index": {"type": "integer"},
-                        "end_snippet_index": {"type": "integer"},
-                        "start_quote": {"type": "string"},
-                        "end_quote": {"type": "string"},
-                        "reasoning": {"type": "string"},
-                    },
-                    "required": [
-                        "start_snippet_index",
-                        "end_snippet_index",
-                        "start_quote",
-                        "end_quote",
-                        "reasoning",
-                    ],
-                    "additionalProperties": False,
+SPAN_TOOL_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "highlights": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "start_snippet_index": {"type": "integer"},
+                    "end_snippet_index": {"type": "integer"},
+                    "start_quote": {"type": "string"},
+                    "end_quote": {"type": "string"},
+                    "reasoning": {"type": "string"},
                 },
-            }
-        },
-        "required": ["highlights"],
-        "additionalProperties": False,
+                "required": [
+                    "start_snippet_index",
+                    "end_snippet_index",
+                    "start_quote",
+                    "end_quote",
+                    "reasoning",
+                ],
+            },
+        }
     },
-    "strict": True,
+    "required": ["highlights"],
 }
 
 
@@ -145,22 +138,28 @@ def build_span_prompt(
 # OpenAI API call
 # ---------------------------------------------------------------------------
 
-def call_openai_spans(
+def call_llm_spans(
     prompt_text: str,
     model: Optional[str] = None,
+    max_tokens: int = 8192,
 ) -> Dict:
-    """Call OpenAI to get span-level highlight boundaries."""
-    model = model or OPENAI_SPAN_MODEL
-    client = OpenAI()
-    response = client.chat.completions.parse(
-        model=model,
-        messages=[{"role": "user", "content": prompt_text}],
-        response_format={
-            "type": "json_schema",
-            "json_schema": SPAN_JSON_SCHEMA,
-        },
+    """Pass-2 span refinement. Returns {highlights: [...]}."""
+    return run_structured(
+        model=model or ANTHROPIC_SPAN_MODEL,
+        prompt=prompt_text,
+        tool_name="record_highlight_spans",
+        tool_description=(
+            "Record each precise highlight span as (start_snippet_index, "
+            "end_snippet_index, verbatim start_quote, verbatim end_quote, "
+            "reasoning)."
+        ),
+        input_schema=SPAN_TOOL_SCHEMA,
+        max_tokens=max_tokens,
     )
-    return json.loads(response.choices[0].message.content)
+
+
+# Backwards-compatible alias.
+call_openai_spans = call_llm_spans
 
 
 # ---------------------------------------------------------------------------

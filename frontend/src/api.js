@@ -4,10 +4,138 @@ async function request(url, options) {
   const res = await fetch(url, options);
   const body = await res.json();
   if (!res.ok) {
-    const message = body?.error || `Request failed (${res.status})`;
+    const message = body?.detail || body?.error || `Request failed (${res.status})`;
     throw new Error(message);
   }
   return body;
+}
+
+// ---- Corpus / heatmap ----
+
+export async function fetchCorpora() {
+  return request(`${BASE}/corpora`);
+}
+
+export async function fetchCorpusConversations(corpusId) {
+  return request(`${BASE}/corpora/${corpusId}/conversations`);
+}
+
+export async function fetchCorpusSnippets(corpusId) {
+  return request(`${BASE}/corpora/${corpusId}/snippets`);
+}
+
+export async function runCorpusQuery(corpusId, payload) {
+  return request(`${BASE}/corpora/${corpusId}/query`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function runCorpusSimilar(corpusId, snippetIds) {
+  return request(`${BASE}/corpora/${corpusId}/similar`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ snippet_ids: snippetIds }),
+  });
+}
+
+export async function fetchSnippetDetail(snippetId) {
+  return request(`${BASE}/snippets/${snippetId}`);
+}
+
+export async function explainSnippet(snippetId, payload) {
+  return request(`${BASE}/snippets/${snippetId}/explain`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function audioUrl(conversationId, start, end) {
+  const params = new URLSearchParams();
+  if (start != null) params.set('start', start);
+  if (end != null) params.set('end', end);
+  const q = params.toString();
+  return `${BASE}/conversations/${conversationId}/audio${q ? `?${q}` : ''}`;
+}
+
+export async function registerCorticoConversation(name) {
+  return request(`${BASE}/cortico/${encodeURIComponent(name)}/register`, {
+    method: 'POST',
+  });
+}
+
+// ---- Anthology ----
+
+export async function fetchAnthologies() {
+  return request(`${BASE}/anthologies`);
+}
+
+export async function createAnthology(name, preface = '') {
+  return request(`${BASE}/anthologies`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, preface }),
+  });
+}
+
+export async function fetchAnthology(id) {
+  return request(`${BASE}/anthologies/${id}`);
+}
+
+export async function updateAnthology(id, patch) {
+  return request(`${BASE}/anthologies/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
+}
+
+export async function upsertSection(anthId, payload) {
+  return request(`${BASE}/anthologies/${anthId}/sections`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteSection(sectionId) {
+  return request(`${BASE}/sections/${sectionId}`, { method: 'DELETE' });
+}
+
+export async function addClip(payload) {
+  return request(`${BASE}/clips`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateClip(clipId, patch) {
+  return request(`${BASE}/clips/${clipId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
+}
+
+export async function deleteClip(clipId) {
+  return request(`${BASE}/clips/${clipId}`, { method: 'DELETE' });
+}
+
+export async function reorderClips(sectionId, clipIds) {
+  return request(`${BASE}/sections/${sectionId}/reorder-clips`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ clip_ids: clipIds }),
+  });
+}
+
+export function anthologyExportUrl(anthId, format = 'both', embed = false) {
+  const params = new URLSearchParams({ format });
+  if (embed) params.set('embed', 'true');
+  return `${BASE}/anthologies/${anthId}/export?${params.toString()}`;
 }
 
 export async function fetchConversations() {

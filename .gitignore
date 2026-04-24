@@ -3,6 +3,16 @@ snippet_highlight_scores_cache/
 span_highlight_predictions_cache/
 highlight_cache/
 saved_highlights/
+.env
+.venv/
+data/
+checkpoints/
+node_modules/
+iq2_audio/
+**/.DS_Store
+*.wav
+*.mp3
+*.m4a
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -1,244 +1,216 @@
-# LLM-based Automatic Highlighting for Conversations
+# Conversation Heatmap + Auto-Highlighter
 
-An interactive tool for detecting, refining, and reviewing highlights in conversation transcripts using LLM-based scoring. Built with a FastAPI backend and a React (Vite) frontend.
+A unified web tool for finding salient moments in recorded conversations. Two views share one app:
 
-The tool takes raw conversation transcript JSONs taken from the [Cortico API](https://api.cortico.ai/docs#overview), cleans and formats them, and runs a two-stage LLM pipeline:
+1. **Auto-Highlighter** (primary) — open one conversation at a time. A two-pass LLM pipeline scores paragraph-level snippets 0–10 (Pass 1, heatmap-style in-conversation) then refines above-threshold regions into character-level spans (Pass 2). Curator accepts / rejects / drags / adds spans, then lifts accepted spans to an anthology.
+2. **Corpus Heatmap** (secondary toggle) — a cross-conversation fan grid. Every snippet in every conversation is visible at once. Natural-language queries ("frustrated moments about housing") are decomposed via Claude into style + topic axes, scored against Wonjune's expressive-speech embeddings + sentence-transformers topical embeddings, and rendered as heat on top of the full corpus (non-matching snippets grey out — the corpus is never hidden).
 
-1. **Snippet-level scoring**: An LLM (using the OpenAI API) assigns each paragraph-level snippet a 0-10 highlight score with reasoning. Results can be visualized as a heat map.
-2. **Span-level refinement**: A second LLM pass takes any snippets scoring above a threshold and identifies precise start/end boundaries within each snippet, producing exact character-level highlight spans for human review.
+Both surfaces feed the same **Anthology Workspace**, where clips are arranged into sections with curator notes and exported as (a) a working dataset bundle and (b) a self-contained karaoke HTML player with word-level transcript synchronization.
 
-## Features
+All LLM calls (Pass 1, Pass 2, query planner, "why salient" explanations) go through Anthropic Claude. Paralinguistic retrieval uses Wonjune Kang's [expressive-speech-retrieval](../expressive-speech-retrieval/) checkpoint.
 
-### End-to-end pipeline (default mode)
-
-The default mode runs both LLM passes in a single click. Select a conversation, configure the prompt fields, and click **Get AI-Generated Highlights** to get final span-level highlights directly.
-
-After the pipeline completes, the view switches to span-level mode automatically. You can toggle back to heat map mode at any time to inspect the snippet-level scores and reasoning from Pass 1.
-
-### Modular prompt configuration
-
-The user may configure three fields for instructing the LLM:
-
-- **What kind of content are you looking to highlight?** — Define what constitutes a highlight (e.g., personal stories, emotional moments). Defaults to a general "powerful or noteworthy moments" definition.
-- **Do you want to provide additional context about this conversation?** — Optional background about the conversation setting or participants.
-- **Do you want to find content related to a specific topic or theme?** — Optionally focus highlight extraction on a specific topic. Leave blank to find general highlights across a broad range of topics.
-
-A **Preview Full Prompt** button assembles and displays the full prompt that will be sent to the LLM before committing to the API call.
-
-### Pass 1: Snippet-level highlight detection
-
-- **Heat map visualization**: The transcript is rendered with highlighted snippets shaded according to their scores (higher scores produce darker shades).
-- **Reasoning tooltips**: Hover over any highlighted snippet to see the LLM's score and reasoning.
-- **Snippet merging**: Short single-sentence snippets are merged before being sent to the LLM, then scores are mapped back to the original un-merged snippets for rendering.
-- **Cached predictions**: Load previously generated prediction files without re-running the LLM (in two-step mode).
-
-### Pass 2: Span-level highlight refinement
-
-- **Span detection**: Consecutive above-threshold snippets are grouped and sent to a second LLM call. The LLM returns verbatim quoted anchors defining each highlight's start and end; the backend resolves these to exact character offsets (with fuzzy-match fallback).
-- **Reasoning tooltips on spans**: Hover over any highlighted span to see the LLM's reasoning for why that span was identified as a highlight.
-- **Cached span predictions**: Span prediction files are saved per conversation and can be reloaded for easy visualization without running the LLM API calls again.
-
-### Human review
-
-- **Accept / Reject**: Each highlight span has inline Accept and Reject buttons.
-- **Undo**: Revert an accepted or rejected highlight back to pending.
-- **Accept All**: Accept all pending highlights in one click.
-- **Drag to adjust boundaries**: Drag handles at each span boundary to resize the highlight to a word boundary.
-- **Add new highlight**: Enable "Add New Highlight" mode, then click and drag over any part of the transcript to create a new pending span. User-created highlights display a "User-created highlight" tooltip on hover.
-- **Delete**: Remove a rejected highlight entirely.
-- **Progress summary**: The sidebar shows a live count of pending / accepted / rejected highlights.
-- **Save Highlights**: Once all highlights are accepted or rejected, save the accepted ones to a JSON file.
-
-### Two-step mode
-
-Setting `END_TO_END = False` in `backend/config.py` restores the original two-step UI, where Pass 1 and Pass 2 are triggered separately. This mode exposes the predictions file selector, threshold slider, and span predictions file selector in the sidebar, and uses a legacy text editor that allows the user to view and edit the full-prompt to the LLM.
+---
 
 ## Prerequisites
 
 - Python 3.10+
 - Node.js 18+ and npm
-- An OpenAI API key with access to the configured models
+- `ffmpeg` (for audio loading)
+- An Anthropic API key (`ANTHROPIC_API_KEY`)
+- (Optional, for paralinguistic audio features) Wonjune's roberta_emotion2vec checkpoint, placed anywhere on disk and pointed at via `WONJUNE_CHECKPOINT_PATH`. Without this, topical queries still work; style queries are disabled with a clear error.
 
 ## Setup
-
-### 1. Backend
 
 ```bash
 cd backend
 pip install -r requirements.txt
-```
+# Make Wonjune's model code importable:
+pip install -e ../../expressive-speech-retrieval 2>/dev/null || true  # not strictly required; sys.path fallback also works
 
-### 2. Frontend
-
-```bash
-cd frontend
+cd ../frontend
 npm install
 ```
 
-### 3. Environment
-
-Set your OpenAI API key:
-
-```bash
-export OPENAI_API_KEY="sk-..."
-```
-
-Optionally override the default models:
-
-```bash
-export OPENAI_SNIPPET_MODEL="gpt-5"   # Pass 1 (default: gpt-5-2025-08-07)
-export OPENAI_SPAN_MODEL="gpt-5-mini" # Pass 2 (default: gpt-5-mini)
-```
-
-### 4. Data
-
-The backend expects raw Cortico transcript JSONs at:
+Copy `.env.example` to `.env` and fill in:
 
 ```
-<project_root>/cortico_api_transcripts_json/conversation-*.json
+ANTHROPIC_API_KEY=sk-ant-...
+WONJUNE_CHECKPOINT_PATH=/abs/path/to/roberta_emotion2vec.pt   # optional
+WONJUNE_CONFIG=config/roberta_emotion2vec.yaml                # relative to expressive-speech-retrieval/
+WHISPER_MODEL=medium
 ```
 
-The path is configured in `backend/config.py` via `BASE_DIR` and `RAW_TRANSCRIPTS_DIR`. Update these if your data lives elsewhere.
-
-You can download transcript JSON files for conversations from the realtalk@Boston corpus from this [Google Drive link](https://drive.google.com/drive/folders/1nUZpaUcLMpEcn1rHDYlaAQ6Ml83jqEdc?usp=drive_link). Unzip `cortico_api_transcripts_json` into the project's working directory to load transcripts into the UI.
-
-Additionally, if you have pre-computed snippet-level highlight score files, place them under `highlight_cache/<conversation-id>/predictions_*.json` to load them without running Pass 1 (two-step mode only).
+The backend refuses to start without `ANTHROPIC_API_KEY`. The style encoder lazy-fails with a clear error the first time you try to run a style-axis query or ingest audio; other features continue to work.
 
 ## Running
 
-Start both servers (each in its own terminal):
+Two terminals:
 
 **Backend** (port 5000):
 
 ```bash
 cd backend
 python app.py
-# or equivalently:
-uvicorn app:app --reload --port 5000
 ```
 
-**Frontend** (port 3000, proxies `/api` to the backend):
+**Frontend** (port 3000, proxies `/api` → backend):
 
 ```bash
 cd frontend
 npm run dev
 ```
 
-Then open http://localhost:3000 in your browser.
+Then open http://localhost:3000/.
 
-If running on a remote machine, make sure to set up appropriate port forwarding to access from your local machine.
+## Ingesting conversations into the corpus
 
-## Usage
+The Auto-Highlighter works directly off Cortico JSON files in `cortico_api_transcripts_json/` and requires no ingestion step. But for the Corpus Heatmap and the Anthology Workspace to see a conversation, run the ingestion script:
 
-### End-to-end mode (default)
+```bash
+# Text-only (topical axis available, no style axis):
+python scripts/ingest.py --corpus "my-corpus" --cortico-dir ./cortico_api_transcripts_json/
 
-1. **Select a conversation** from the sidebar dropdown. The transcript loads automatically.
-2. **Configure the prompt fields** in the Prompt Configuration panel: define what a highlight is, optionally add conversation context, and optionally specify a topic or theme to focus on.
-3. **Preview the prompt** (optional): Click "Preview Full Prompt" to inspect the assembled prompt before the API call.
-4. **Run the pipeline**: Click **Get AI-Generated Highlights**, confirm the modal, and wait (4–8 minutes). The view switches to Span-Level mode when complete.
-5. **Toggle Heat Map**: Use the View Mode toggle in the sidebar to switch between the snippet-level heat map (Pass 1 scores and reasoning) and the span-level highlights editor.
-6. **Review highlights**: Accept, reject, undo, or drag-adjust each span. Hover over any span to see the LLM's reasoning. Use "Accept All" to accept all at once. Add new spans manually if needed.
-7. **Save highlights**: Once all highlights are decided, click "Save Highlights" to export accepted spans to `saved_highlights/<conversation-id>/`.
+# Audio-only (ASR runs; both axes available):
+python scripts/ingest.py --corpus "my-corpus" --audio-dir /path/to/audio/
 
-### Two-step mode (`END_TO_END = False`)
+# Cortico JSON paired with matching WAV files by stem:
+python scripts/ingest.py --corpus "my-corpus" \
+    --cortico-dir ./cortico_api_transcripts_json/ \
+    --audio-dir /path/to/audio/
+```
 
-1. **Select a conversation** from the sidebar dropdown.
-2. **Load snippet-level predictions** from the Predictions File dropdown, or run new detection via the Prompt Editor.
-3. **Adjust the threshold** to control which snippets appear highlighted.
-4. **Hover over highlighted snippets** to read the LLM's score and reasoning.
-5. **Get span-level highlights**: With a snippet-level prediction loaded, click "Get Span-Level Highlights". Confirm the modal, then wait for the second-pass LLM call to complete (1–3 minutes). The view switches to Span-Level mode automatically.
-   - Alternatively, load a previously cached span prediction from the Span Predictions File dropdown.
-6. **Review highlights** and **Complete Highlighting** as above.
+Re-running the script on the same `(corpus, title)` replaces existing embeddings.
+
+## Smoke test flow
+
+1. Start backend + frontend.
+2. Nav to **Auto-Highlighter** (default). Select a Cortico conversation, configure the prompt fields, click **Get AI-Generated Highlights**. Wait 4–8 min. Accept a few spans, click **Lift accepted to anthology**.
+3. Nav to **Anthologies** → open the newly-created anthology. Add a section, drag some clips around, add a curator note, add a preface. Click **Export dataset + karaoke** → open the karaoke `index.html` from the downloaded zip — confirm word-sync highlighting plays in a browser.
+4. (With a Wonjune checkpoint installed) run the ingest script, then nav to **Corpus Heatmap**. Type a query like "moments where people got frustrated talking about housing". Confirm the style/topic decomposition renders, heat appears on the fans, non-matching snippets grey out. Click a hot snippet → detail panel shows transcript + audio; click **Open in Auto-Highlighter →** to jump back.
+
+## Features
+
+### Auto-Highlighter
+
+(Same flow as the original highlighter — prompt configuration, heat-map + span-level views, accept/reject/drag/add/delete, Save Highlights — now with Claude under the hood via tool-use for structured output.)
+
+New: **Lift accepted to anthology** — button alongside Save Highlights. All accepted spans flow as clips into an anthology named `<conversation> highlights` (created on demand), with each span's LLM reasoning captured as the curator note.
+
+### Corpus Heatmap
+
+- **Fan grid canvas**: every conversation is a vertical fan of snippet lines; every line is always visible.
+- **Query bar**: natural-language input ("angry moments about rent"). Claude decomposes into `{style, topic}`; decomposition is rendered and editable above the canvas so the user can correct misreadings.
+- **Axis controls**: style toggle, topic toggle, blend slider, grey-out threshold slider.
+- **Grey-out only**: non-matching snippets fade to low alpha. The corpus is never filtered.
+- **Shift+drag lasso**: "more like this" — pulls an averaged style+topic signature from the selected rectangle and re-scores everything against it.
+- **Tooltips**: hover any snippet for preview text + per-axis scores.
+- **Detail panel**: transcript + ±30 s surrounding context + audio player (if audio available) + **Why is this salient?** (LLM explanation, cached) + lift-to-anthology with draggable start/end.
+- **Cross-view**: "Open in Auto-Highlighter →" pre-fills the prompt theme from the current topical query.
+
+### Anthology Workspace
+
+- Editable preface, reorderable sections (title + intro), clips with curator notes and configurable boundaries.
+- Auto-save on blur.
+- Two exports produced together as a single zip:
+  - `dataset.zip` — `anthology.json` + `transcripts/` + `audio/` + `README.md`
+  - `karaoke.zip` — self-contained `index.html` bundle with word-synced transcript display (relative-path audio; `embed=true` option embeds as base64 for a single-file artifact).
 
 ## Project structure
 
 ```
 llm-auto-highlighter/
 ├── backend/
-│   ├── app.py                         # FastAPI app and all API routes
-│   ├── config.py                      # Paths, models, config flags, prompt loading
-│   ├── transcript_processor.py        # Transcript cleaning, snippet merging, index mapping
-│   ├── prompt_builder.py              # Snippet formatting and prompt assembly (standard + modular)
-│   ├── highlight_detector.py          # Pass 1: OpenAI API, score un-merging, prediction I/O
-│   ├── span_detector.py               # Pass 2: grouping, span prompt, boundary resolution, I/O
-│   ├── requirements.txt
-│   └── prompts/                       # Prompt template and component files
-│       ├── base_prompt.md             # Legacy full prompt template (two-step mode)
-│       ├── base_prompt_modularized.md # Modular prompt template with placeholders
-│       ├── highlight_definition_base.md   # Default highlight definition text
-│       ├── conversation_context_base.md   # Default conversation context text
-│       ├── theme_conditioning_instructions.md  # Template for optional theme conditioning block
-│       └── span_prompt_template.md    # Fixed prompt for Pass 2 span-level detection
+│   ├── app.py                 # FastAPI app, mounts corpus + anthology routers
+│   ├── config.py              # env, paths, model IDs, ensure_data_dirs/require_key
+│   ├── db.py                  # SQLModel schema: Corpus/Conversation/Snippet/Word/Anthology/Section/Clip/Explanation
+│   ├── llm_client.py          # Anthropic tool-use wrapper (run_structured, run_text)
+│   ├── highlight_detector.py  # Pass 1 via Claude + score un-merging + cache I/O
+│   ├── span_detector.py       # Pass 2 via Claude + anchor→char-offset + grouping + cache I/O
+│   ├── transcript_processor.py# Cortico JSON cleaning + snippet merging
+│   ├── prompt_builder.py      # Legacy + modular prompt assembly
+│   ├── routes_corpus.py       # /api/corpora, /api/snippets, /api/conversations/{id}/audio, /api/cortico/*/register
+│   ├── routes_anthology.py    # /api/anthologies, /api/clips, /api/sections, /api/anthologies/*/export
+│   ├── encoders/
+│   │   ├── style.py           # Wonjune wrappers; fail-loud if checkpoint missing
+│   │   └── topic.py           # sentence-transformers/all-MiniLM-L6-v2
+│   ├── audio/
+│   │   ├── prep.py            # 16 kHz mono WAV prep + slicing
+│   │   ├── asr.py             # faster-whisper
+│   │   ├── segment.py         # 3–15 s snippet shaping
+│   │   └── pipeline.py        # orchestrator: audio / cortico / paired
+│   ├── retrieval/
+│   │   ├── planner.py         # NL → {style, topic} via Claude tool-use
+│   │   ├── search.py          # cosine + RRF/weighted/max fusion + signature
+│   │   └── explain.py         # "why salient", per-(snippet, query) cached
+│   ├── anthology/
+│   │   ├── service.py         # CRUD
+│   │   └── export.py          # dataset .zip + karaoke HTML bundle
+│   └── prompts/               # (unchanged)
 ├── frontend/
-│   ├── index.html
-│   ├── package.json
-│   ├── vite.config.js
-│   └── src/
-│       ├── main.jsx
-│       ├── App.jsx                    # Main application state and layout
-│       ├── App.css                    # All styles
-│       ├── api.js                     # Fetch wrappers for all backend endpoints
-│       └── components/
-│           ├── ConversationSelector.jsx
-│           ├── PredictionsFileSelector.jsx
-│           ├── ModularPromptEditor.jsx    # Three-field prompt configuration panel
-│           ├── PromptEditor.jsx           # Legacy single-textarea prompt editor (two-step mode)
-│           ├── PreviewModal.jsx
-│           ├── ThresholdControls.jsx
-│           ├── TranscriptViewer.jsx
-│           ├── SnippetBlock.jsx
-│           ├── ReasoningTooltip.jsx
-│           ├── HighlightSpanEditor.jsx    # Sidebar summary panel
-│           └── HighlightActionButtons.jsx
-├── highlight_cache/                   # Unified cache for both LLM passes, per conversation
-│   └── <conversation-id>/
-│       ├── predictions_<timestamp>.json   # Pass 1 snippet scores
-│       └── spans_<timestamp>.json         # Pass 2 span predictions
-├── saved_highlights/                  # Finalized accepted highlight exports
-│   └── <conversation-id>/
-└── README.md
+│   ├── src/
+│   │   ├── main.jsx           # HashRouter
+│   │   ├── App.jsx            # Auto-Highlighter (route "/")
+│   │   ├── views/
+│   │   │   ├── Shell.jsx              # top-nav layout
+│   │   │   ├── CorpusHeatMap.jsx      # route "/corpus"
+│   │   │   ├── AnthologyList.jsx      # route "/anthologies"
+│   │   │   ├── AnthologyWorkspace.jsx # route "/anthologies/:id"
+│   │   │   └── views.css
+│   │   └── components/
+│   │       ├── FanGridCanvas.jsx      # canvas heatmap grid with lasso
+│   │       ├── QueryBar.jsx
+│   │       ├── AxisControls.jsx
+│   │       ├── DetailPanel.jsx        # audio + transcript + explain + lift
+│   │       └── (original highlighter components)
+│   └── package.json
+├── scripts/
+│   └── ingest.py              # CLI: ASR + embed for audio and/or Cortico JSON
+├── data/                      # gitignored; created at startup
+│   ├── corpus.db
+│   ├── audio/
+│   ├── vectors/{corpus_id}/{style,topic}.npy
+│   └── ...
+├── highlight_cache/           # (unchanged, per-conversation pass 1 + 2 outputs)
+├── saved_highlights/          # (unchanged, finalized accepted highlight JSON)
+└── .env.example
 ```
 
-## Cache file structure
+## API summary (new endpoints only)
 
-Both LLM pass outputs are stored together under `highlight_cache/<conversation-id>/`, distinguished by filename prefix:
-
-- `predictions_<timestamp>.json` — raw Pass 1 LLM output (paragraph scores and reasoning)
-- `spans_<timestamp>.json` — Pass 2 span predictions, including a `source_predictions_file` field that links back to the corresponding Pass 1 file
-
-In end-to-end mode, both files for a single run share the same timestamp, making the pairing unambiguous.
-
-## API reference
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/config` | Return `end_to_end` flag and `default_threshold` |
-| GET | `/api/prompt-components` | Return default values for modular prompt fields |
-| GET | `/api/conversations` | List available conversation IDs |
-| GET | `/api/conversations/<id>/transcript` | Original + merged snippets and merge mapping |
-| GET | `/api/conversations/<id>/predictions` | List snippet-level prediction filenames |
-| GET | `/api/conversations/<id>/predictions/<file>` | Load and un-merge a prediction file |
-| POST | `/api/conversations/<id>/preview-prompt` | Preview assembled legacy prompt |
-| POST | `/api/conversations/<id>/preview-prompt-modular` | Preview assembled modular prompt |
-| POST | `/api/conversations/<id>/detect-highlights` | Run Pass 1 LLM detection, save and return results |
-| POST | `/api/conversations/<id>/detect-highlights-e2e` | Run both passes end-to-end, save and return results |
-| POST | `/api/conversations/<id>/detect-spans` | Run Pass 2 span detection only, save and return results |
-| GET | `/api/conversations/<id>/span-predictions` | List span prediction filenames |
-| GET | `/api/conversations/<id>/span-predictions/<file>` | Load a span prediction file |
-| POST | `/api/conversations/<id>/highlights/save` | Save finalized accepted highlights |
-| GET | `/api/default-prompt` | Get the default legacy prompt template |
+| Method | Endpoint | Purpose |
+|---|---|---|
+| GET  | `/api/corpora` | List corpora |
+| GET  | `/api/corpora/{id}/conversations` | List conversations in a corpus |
+| GET  | `/api/corpora/{id}/snippets` | All snippets grouped by conversation (for fan grid) |
+| POST | `/api/corpora/{id}/query` | NL query → per-snippet scores + decomposition |
+| POST | `/api/corpora/{id}/similar` | "More like this" from `snippet_ids` |
+| GET  | `/api/snippets/{id}` | Snippet + ±3 neighbor snippets + words |
+| POST | `/api/snippets/{id}/explain` | Cached "why salient" one-liner |
+| GET  | `/api/conversations/{id}/audio?start=&end=` | WAV stream (full or sliced) |
+| POST | `/api/cortico/{name}/register` | Register a Cortico conversation into the default corpus for anthology linking |
+| GET/POST/PATCH/DELETE | `/api/anthologies`, `/api/sections`, `/api/clips` | Anthology CRUD |
+| GET  | `/api/anthologies/{id}/export?format=dataset\|karaoke\|both&embed=` | Export zip |
 
 ## Configuration
 
-All configuration is centralized in `backend/config.py`:
+All runtime config is in `backend/config.py` and can be overridden by env vars. Key knobs:
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `END_TO_END` | `True` | Run both LLM passes in a single click; set to `False` for the original two-step UI |
-| `DEFAULT_THRESHOLD` | `4` | Score threshold used in end-to-end mode to select snippets for Pass 2 |
-| `BASE_DIR` | `llm-auto-highlighter` | Project root directory |
-| `RAW_TRANSCRIPTS_DIR` | `<BASE_DIR>/cortico_api_transcripts_json` | Directory containing raw transcript JSONs |
-| `HIGHLIGHT_CACHE_DIR` | `<BASE_DIR>/highlight_cache` | Unified cache for Pass 1 and Pass 2 LLM outputs |
-| `SAVED_HIGHLIGHTS_DIR` | `<BASE_DIR>/saved_highlights` | Finalized highlight exports |
-| `OPENAI_SNIPPET_MODEL` | `gpt-5-2025-08-07` | Model used for Pass 1 snippet-level scoring |
-| `OPENAI_SPAN_MODEL` | `gpt-5-mini` | Model used for Pass 2 span boundary extraction |
+| Variable | Default | |
+|---|---|---|
+| `END_TO_END` | `True` | Run Pass 1 + Pass 2 in one click |
+| `DEFAULT_THRESHOLD` | `4` | Pass-2 candidate threshold |
+| `ANTHROPIC_SNIPPET_MODEL` | `claude-opus-4-7` | Pass 1 model |
+| `ANTHROPIC_SPAN_MODEL` | `claude-sonnet-4-6` | Pass 2 model |
+| `ANTHROPIC_PLANNER_MODEL` | `claude-sonnet-4-6` | Query decomposition |
+| `ANTHROPIC_EXPLAIN_MODEL` | `claude-sonnet-4-6` | "Why salient" |
+| `WHISPER_MODEL` | `medium` | faster-whisper size |
+| `WHISPER_COMPUTE_TYPE` | `int8` | |
+| `WONJUNE_CHECKPOINT_PATH` | (unset) | Enables style-axis features |
+| `DATA_DIR` | `./data` | Corpus DB + vectors + audio cache |
+
+## Known limitations (by design, not bugs)
+
+- The Corpus Heatmap style axis requires a Wonjune checkpoint. Without one, the style toggle can be kept off and topical queries work fine.
+- "More like this" needs at least one embedded snippet in the selection.
+- `data/corpus.db` migrations are done via SQLModel's `create_all` — no Alembic. Blow it away to reset the corpus state.
+- Anthology re-import from zip is not wired in v1 (export works in both directions; import is a future addition).

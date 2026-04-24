@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import ConversationSelector from './components/ConversationSelector';
 import PredictionsFileSelector from './components/PredictionsFileSelector';
 import PromptEditor from './components/PromptEditor';
@@ -23,9 +24,15 @@ import {
   fetchPromptComponents,
   previewModularPrompt,
   runEndToEndPipeline,
+  registerCorticoConversation,
+  fetchAnthologies,
+  createAnthology,
+  fetchAnthology,
+  addClip,
 } from './api';
 
 export default function App() {
+  const [searchParams] = useSearchParams();
   // --- Config ---
   const [endToEnd, setEndToEnd] = useState(true);
   const [configLoaded, setConfigLoaded] = useState(false);
@@ -90,10 +97,24 @@ export default function App() {
       .then((data) => {
         setHighlightDefinition(data.highlight_definition || '');
         setConversationContext(data.conversation_context || '');
-        setThemeConditioning(data.theme_conditioning || '');
+        // If the user arrived with a ?topic=... pre-fill, use it; else default.
+        const topicParam = searchParams.get('topic');
+        setThemeConditioning(topicParam && topicParam.trim() ? topicParam : (data.theme_conditioning || ''));
       })
       .catch(() => {});
-  }, []);
+  }, [searchParams]);
+
+  // Auto-select a conversation from the URL (?conv=...) once the
+  // conversation list has loaded. Runs once per (conv param, list) change.
+  useEffect(() => {
+    const convParam = searchParams.get('conv');
+    if (!convParam || conversations.length === 0 || selectedConv) return;
+    if (conversations.includes(convParam)) {
+      handleConversationChange(convParam);
+    }
+    // handleConversationChange is stable (useCallback with empty deps).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversations, searchParams]);
 
   const startTimer = useCallback(() => {
     setDetectElapsed(0);
@@ -401,6 +422,59 @@ export default function App() {
     }
   }, [endToEnd]);
 
+  const [liftingToAnth, setLiftingToAnth] = useState(false);
+  const [liftAnthMessage, setLiftAnthMessage] = useState('');
+
+  const handleLiftAcceptedToAnthology = useCallback(async () => {
+    if (!selectedConv || !spanHighlights || !transcript) return;
+    setLiftingToAnth(true);
+    setLiftAnthMessage('');
+    try {
+      // Ensure the Cortico conversation is registered in the DB.
+      const reg = await registerCorticoConversation(selectedConv);
+      const convId = reg.conversation_id;
+
+      // Find or create an anthology matching this conversation.
+      const list = await fetchAnthologies();
+      const targetName = `${selectedConv} highlights`;
+      let anth = list.find((a) => a.name === targetName);
+      if (!anth) {
+        const r = await createAnthology(targetName);
+        anth = await fetchAnthology(r.id);
+      } else {
+        anth = await fetchAnthology(anth.id);
+      }
+      const sectionId = anth.sections[0]?.id;
+      if (!sectionId) throw new Error('Anthology has no section');
+
+      // For each accepted span, derive (start_sec, end_sec) from its snippets.
+      const accepted = spanHighlights.filter((hl) => hl.status === 'accepted');
+      let count = 0;
+      for (const hl of accepted) {
+        if (!hl.spans || hl.spans.length === 0) continue;
+        const firstSnippet = transcript.original_snippets[hl.spans[0].snippet_index];
+        const lastSnippet = transcript.original_snippets[hl.spans[hl.spans.length - 1].snippet_index];
+        if (!firstSnippet || !lastSnippet) continue;
+        await addClip({
+          section_id: sectionId,
+          conversation_id: convId,
+          start_sec: firstSnippet.audio_start_offset || 0,
+          end_sec: lastSnippet.audio_end_offset || 0,
+          curator_note: hl.reasoning || '',
+          source: 'pass2_span',
+          source_ref: hl.id,
+          tags: [],
+        });
+        count++;
+      }
+      setLiftAnthMessage(`Lifted ${count} clip(s) to "${anth.name}"`);
+    } catch (e) {
+      setLiftAnthMessage(`(error: ${e.message})`);
+    } finally {
+      setLiftingToAnth(false);
+    }
+  }, [selectedConv, spanHighlights, transcript]);
+
   const handleCompleteHighlighting = useCallback(async () => {
     if (!selectedConv || !spanHighlights || !transcript) return;
     setError(null);
@@ -614,6 +688,20 @@ export default function App() {
                     >
                       Save Highlights
                     </button>
+                    <button
+                      className="btn btn-secondary btn-full"
+                      style={{ marginTop: 8 }}
+                      onClick={handleLiftAcceptedToAnthology}
+                      disabled={liftingToAnth || !spanHighlights?.some((h) => h.status === 'accepted')}
+                      title="Add all accepted spans as clips in an anthology"
+                    >
+                      {liftingToAnth ? 'Lifting…' : 'Lift accepted to anthology'}
+                    </button>
+                    {liftAnthMessage && (
+                      <div style={{ marginTop: 6, color: '#2a7a2a', fontSize: '0.85rem' }}>
+                        {liftAnthMessage}
+                      </div>
+                    )}
                   </div>
                 </>
               )}
@@ -714,6 +802,20 @@ export default function App() {
                     >
                       Complete Highlighting
                     </button>
+                    <button
+                      className="btn btn-secondary btn-full"
+                      style={{ marginTop: 8 }}
+                      onClick={handleLiftAcceptedToAnthology}
+                      disabled={liftingToAnth || !spanHighlights?.some((h) => h.status === 'accepted')}
+                      title="Add all accepted spans as clips in an anthology"
+                    >
+                      {liftingToAnth ? 'Lifting…' : 'Lift accepted to anthology'}
+                    </button>
+                    {liftAnthMessage && (
+                      <div style={{ marginTop: 6, color: '#2a7a2a', fontSize: '0.85rem' }}>
+                        {liftAnthMessage}
+                      </div>
+                    )}
                   </div>
                 </>
               )}
@@ -803,7 +905,7 @@ export default function App() {
             </div>
             <div className="modal-body">
               <p>
-                This will trigger an OpenAI API call to run highlight detection using an LLM.
+                This will trigger an Anthropic API call to run highlight detection using an LLM.
               </p>
               <p style={{ marginTop: 12, color: 'var(--text-secondary)', fontSize: '0.88rem' }}>
                 It may take between 4-8 minutes to run depending on the length of the conversation and the number of detected highlights, and will incur API usage costs.
@@ -830,7 +932,7 @@ export default function App() {
             <div className="modal-body">
               <p>
                 This will send <strong>{aboveThresholdCount} snippets</strong> (above
-                threshold {threshold}) to the OpenAI API for precise highlight boundary
+                threshold {threshold}) to the Anthropic API for precise highlight boundary
                 extraction.
               </p>
               <p style={{ marginTop: 12, color: 'var(--text-secondary)', fontSize: '0.88rem' }}>
