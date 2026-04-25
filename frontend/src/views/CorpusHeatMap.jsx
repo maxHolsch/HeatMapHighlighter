@@ -5,6 +5,7 @@ import {
 import {
   fetchCorpora, fetchCorpusSnippets, runCorpusQuery,
   fetchSnippetDetail, explainSnippet, audioUrl,
+  fetchCorpusValence,
 } from '../api';
 
 function heatColor(score, max = 10) {
@@ -47,6 +48,7 @@ export default function CorpusHeatmap() {
   const [query, setQuery] = useState('');
   const [decomp, setDecomp] = useState(null);
   const [scoreMap, setScoreMap] = useState({});
+  const [valenceMap, setValenceMap] = useState({});
   const [styleQ, setStyleQ] = useState('');
   const [topicQ, setTopicQ] = useState('');
   const [styleOn, setStyleOn] = useState(true);
@@ -66,11 +68,18 @@ export default function CorpusHeatmap() {
 
   useEffect(() => {
     if (!corpusId) return;
-    setCorpus(null); setScoreMap({}); setDecomp(null); setFocus(null);
+    setCorpus(null); setScoreMap({}); setValenceMap({}); setDecomp(null); setFocus(null);
     const meta = corpora.find((c) => String(c.id) === corpusId);
     fetchCorpusSnippets(corpusId)
       .then((r) => setCorpus(adaptCorpus(r, meta)))
       .catch((e) => setError(e.message));
+    fetchCorpusValence(corpusId)
+      .then((r) => {
+        const m = {};
+        (r.scores || []).forEach((s) => { m[s.snippet_id] = s.valence; });
+        setValenceMap(m);
+      })
+      .catch(() => {}); // valence is best-effort; tiles fall back to bone
   }, [corpusId, corpora]);
 
   async function runQuery(q) {
@@ -80,7 +89,7 @@ export default function CorpusHeatmap() {
     try {
       const res = await runCorpusQuery(corpusId, { query: q });
       const m = {};
-      (res.scores || []).forEach((s) => { m[s.snippet_id] = s.combined_score; });
+      (res.scores || []).forEach((s) => { m[s.snippet_id] = s.fused_score; });
       setScoreMap(m);
       setDecomp(res.decomposition || null);
       setStyleQ(res.decomposition?.style || '');
@@ -90,6 +99,15 @@ export default function CorpusHeatmap() {
   }
 
   const hasQuery = Object.keys(scoreMap).length > 0;
+  const topRankMap = useMemo(() => {
+    if (!hasQuery) return {};
+    const ranked = Object.entries(scoreMap)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5);
+    const m = {};
+    ranked.forEach(([sid], i) => { m[Number(sid)] = i + 1; });
+    return m;
+  }, [scoreMap, hasQuery]);
   const focusSnippet = useMemo(() => {
     if (!focus || !corpus) return null;
     for (const c of corpus.conversations) {
@@ -186,8 +204,9 @@ export default function CorpusHeatmap() {
           </div>
 
           {corpus
-            ? <FanGrid corpus={corpus} scoreMap={scoreMap} threshold={threshold}
-                focus={focus} setFocus={setFocus} hasQuery={hasQuery}/>
+            ? <FanGrid corpus={corpus} scoreMap={scoreMap} valenceMap={valenceMap}
+                topRankMap={topRankMap} threshold={threshold} focus={focus}
+                setFocus={setFocus} hasQuery={hasQuery}/>
             : <div style={{ padding: 40, textAlign: 'center', fontFamily: 'var(--font-mono)', color: 'var(--fg-muted)' }}>Loading corpus…</div>}
         </Card>
 
@@ -241,18 +260,18 @@ function SliderControl({ label, min, max, step, value, onChange, leftLabel, righ
   );
 }
 
-function FanGrid({ corpus, scoreMap, threshold, focus, setFocus, hasQuery }) {
+function FanGrid({ corpus, scoreMap, valenceMap, topRankMap, threshold, focus, setFocus, hasQuery }) {
   return (
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 14 }}>
       {corpus.conversations.map((c, ci) => (
-        <Fan key={c.id} conversation={c} ci={ci} scoreMap={scoreMap} threshold={threshold}
-          focus={focus} setFocus={setFocus} hasQuery={hasQuery}/>
+        <Fan key={c.id} conversation={c} ci={ci} scoreMap={scoreMap} valenceMap={valenceMap}
+          topRankMap={topRankMap} threshold={threshold} focus={focus} setFocus={setFocus} hasQuery={hasQuery}/>
       ))}
     </div>
   );
 }
 
-function Fan({ conversation, ci, scoreMap, threshold, focus, setFocus, hasQuery }) {
+function Fan({ conversation, ci, scoreMap, valenceMap, topRankMap, threshold, focus, setFocus, hasQuery }) {
   const cols = 4;
   return (
     <div style={{ background: 'var(--paper-warm)', border: '2px solid var(--ink)', borderRadius: 8,
@@ -268,12 +287,23 @@ function Fan({ conversation, ci, scoreMap, threshold, focus, setFocus, hasQuery 
       <div style={{ display: 'grid', gridTemplateColumns: `repeat(${cols}, 1fr)`, gap: 3 }}>
         {conversation.snippets.map((sn) => {
           const score = scoreMap[sn.id];
+          const valence = valenceMap[sn.id];
           const muted = hasQuery && (score === undefined || score < threshold);
-          const fill = !hasQuery ? 'var(--bone)' : (muted ? 'var(--bone)' : heatColor((score ?? 0) * 10, 10));
+          let fill;
+          if (hasQuery) {
+            fill = muted ? 'var(--bone)' : heatColor((score ?? 0) * 10, 10);
+          } else if (valence !== undefined) {
+            fill = heatColor(valence * 10, 10);
+          } else {
+            fill = 'var(--bone)';
+          }
           const sel = focus === sn.id;
+          const titleScore = hasQuery
+            ? `score=${(score ?? 0).toFixed(2)}`
+            : (valence !== undefined ? `valence=${valence.toFixed(2)}` : 'unscored');
           return (
             <button key={sn.id} onClick={() => setFocus(sn.id)}
-              title={`${conversation.title} · score=${(score ?? 0).toFixed(2)}`}
+              title={`${conversation.title} · ${titleScore}`}
               style={{
                 aspectRatio: '1.4 / 1', background: fill,
                 border: sel ? '2px solid var(--ink)' : '1px solid var(--ink)',
@@ -283,9 +313,18 @@ function Fan({ conversation, ci, scoreMap, threshold, focus, setFocus, hasQuery 
                 transition: 'transform 200ms var(--ease-bouncy)',
                 boxShadow: sel ? '2px 2px 0 0 var(--ink)' : 'none',
               }}>
-              {!muted && hasQuery && (
+              {(!muted && (hasQuery || valence !== undefined)) && (
                 <span style={{ position: 'absolute', inset: 0, backgroundImage: 'var(--grain-svg-coarse)',
                   backgroundSize: '60px 60px', mixBlendMode: 'multiply', opacity: 0.4 }}/>
+              )}
+              {topRankMap?.[sn.id] && (
+                <span style={{
+                  position: 'absolute', inset: 0,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontFamily: 'var(--font-display)',
+                  fontSize: '1.6em', lineHeight: 1, color: 'var(--ink)',
+                  textShadow: '0 1px 0 var(--paper)', pointerEvents: 'none',
+                }}>{topRankMap[sn.id]}</span>
               )}
             </button>
           );

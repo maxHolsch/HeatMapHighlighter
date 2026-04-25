@@ -86,10 +86,13 @@ def _load() -> None:
     cfg = OmegaConf.load(str(config_path))
 
     device = torch.device(WONJUNE_DEVICE)
-    speech_enc = SpeechStyleEncoder(config=cfg, device=device)
-    text_enc = StylePromptEncoder(config=cfg, device=device)
+    # Always deserialize to CPU first, then `.to(device)`. Loading state_dict
+    # directly into MPS tensors trips PyTorch's "Unaligned blit" assert on
+    # this checkpoint.
+    speech_enc = SpeechStyleEncoder(config=cfg, device=torch.device("cpu"))
+    text_enc = StylePromptEncoder(config=cfg, device=torch.device("cpu"))
 
-    ckpt = torch.load(WONJUNE_CHECKPOINT_PATH, map_location=device)
+    ckpt = torch.load(WONJUNE_CHECKPOINT_PATH, map_location="cpu")
     speech_enc.load_state_dict(ckpt["speech_style_encoder"])
     text_enc.load_state_dict(ckpt["style_prompt_encoder"])
     speech_enc.eval().to(device)
@@ -117,15 +120,38 @@ def embed_audio(audio_arrays: List[np.ndarray]) -> np.ndarray:
     _load()
     torch = _TORCH
 
+    # Cap each clip at MAX_SECS to keep emotion2vec attention tractable.
+    # Wonjune was trained on IEMOCAP/ESD/Expresso (~2-10s utterances); long
+    # clips both OOM the GPU and drift out of distribution. Take the middle
+    # MAX_SECS so the centre of the snippet, not its boundary, drives style.
+    # CAVEAT (2026-04-25): a 5-min monologue with a heated 10s burst at the
+    # end won't be tagged "passionate" — only the middle 30s drives the score.
+    # Better long-term fix: chunk long snippets into overlapping windows and
+    # max- or mean-pool the per-window embeddings.
+    MAX_SECS = 30
+    SR = 16000
+    max_samples = MAX_SECS * SR
+
+    def _crop(a: np.ndarray) -> np.ndarray:
+        if a.shape[0] <= max_samples:
+            return a
+        mid = a.shape[0] // 2
+        half = max_samples // 2
+        return a[mid - half : mid + half]
+
     out_rows = []
+    is_mps = WONJUNE_DEVICE == "mps"
     with torch.no_grad():
         for arr in audio_arrays:
             arr = np.asarray(arr, dtype=np.float32)
             if arr.ndim != 1:
                 arr = arr.reshape(-1)
+            arr = _crop(arr)
             t = torch.from_numpy(arr).unsqueeze(0).to(WONJUNE_DEVICE)
             emb = _SPEECH_ENC(t).detach().squeeze(0).cpu().numpy().astype(np.float32)
             out_rows.append(emb)
+            if is_mps:
+                torch.mps.empty_cache()
     return np.stack(out_rows, axis=0)
 
 

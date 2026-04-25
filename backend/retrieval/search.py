@@ -150,6 +150,93 @@ def score_query(
     ]
 
 
+def compute_valence(corpus_id: int) -> List[Dict]:
+    """
+    Per-snippet emotional valence in [0, 1]. Uses the Wonjune style space:
+    encode a positive prompt and a negative prompt, take their difference as
+    the valence direction, project every cached style vector onto it, then
+    min-max normalize across the corpus.
+
+    Cached at `data/vectors/{corpus_id}/valence.npy`. Returns an empty list
+    when the style matrix is empty or the encoder is unavailable, so the
+    frontend can fall back to bone.
+    """
+    style_mat = _load_matrix(corpus_id, "style", STYLE_EMBED_DIM)
+    if style_mat.shape[0] == 0:
+        return []
+
+    # Skip the all-zero rows that show up before audio ingest has run.
+    norms = np.linalg.norm(style_mat, axis=1)
+    if not np.any(norms > 1e-6):
+        return []
+
+    from encoders import style as style_enc
+    if not style_enc.is_available():
+        return []
+
+    cache_path = VECTORS_DIR / str(corpus_id) / "valence.npy"
+    if cache_path.is_file():
+        valence = np.load(cache_path)
+        if valence.shape[0] != style_mat.shape[0]:
+            cache_path.unlink()  # stale; recompute
+            valence = None
+        else:
+            valence = valence
+    else:
+        valence = None
+
+    if valence is None:
+        pos = style_enc.embed_text_query(
+            "positive, happy, joyful, enthusiastic, excited, warm"
+        )
+        neg = style_enc.embed_text_query(
+            "negative, angry, sad, frustrated, distressed, cold"
+        )
+        direction = pos - neg
+        direction = direction / (np.linalg.norm(direction) + 1e-8)
+
+        # Project. Rows with zero norm (unembedded snippets) project to 0.
+        projections = style_mat @ direction.astype(np.float32)
+        # Min-max within the non-zero rows so valence spans [0, 1] usefully.
+        nonzero = norms > 1e-6
+        if nonzero.any():
+            lo = float(projections[nonzero].min())
+            hi = float(projections[nonzero].max())
+        else:
+            lo, hi = 0.0, 1.0
+        if hi - lo < 1e-6:
+            valence = np.full_like(projections, 0.5)
+        else:
+            valence = (projections - lo) / (hi - lo)
+            valence = np.clip(valence, 0.0, 1.0)
+        # Zero-norm rows: park at 0.5 so they don't pretend to be extremes.
+        valence[~nonzero] = 0.5
+        valence = valence.astype(np.float32)
+        np.save(cache_path, valence)
+
+    # Map back to per-snippet via Snippet.style_row.
+    from db import Conversation
+    with session() as s:
+        conv_ids = set(
+            c.id for c in s.exec(
+                select(Conversation).where(Conversation.corpus_id == corpus_id)
+            ).all()
+        )
+        rows = [
+            r for r in s.exec(select(Snippet)).all()
+            if r.conversation_id in conv_ids
+        ]
+
+    out = []
+    for r in rows:
+        if r.style_row is not None and r.style_row < len(valence):
+            v = float(valence[r.style_row])
+        else:
+            v = 0.5
+        out.append({"snippet_id": r.id, "valence": v})
+    return out
+
+
 def score_signature(corpus_id: int, snippet_ids: List[int]) -> List[Dict]:
     """
     Compute an averaged signature from the given snippets and score every

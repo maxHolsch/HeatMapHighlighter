@@ -24,6 +24,10 @@ export async function fetchCorpusSnippets(corpusId) {
   return request(`${BASE}/corpora/${corpusId}/snippets`);
 }
 
+export async function fetchCorpusValence(corpusId) {
+  return request(`${BASE}/corpora/${corpusId}/valence`);
+}
+
 export async function runCorpusQuery(corpusId, payload) {
   return request(`${BASE}/corpora/${corpusId}/query`, {
     method: 'POST',

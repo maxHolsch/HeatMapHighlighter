@@ -62,6 +62,13 @@ def _save_matrix(corpus_id: int, kind: str, matrix: np.ndarray) -> None:
 
 def _append_rows(corpus_id: int, kind: str, rows: np.ndarray, dim: int) -> Tuple[int, int]:
     """Append rows, return (start_row_index, end_row_index_exclusive)."""
+    # CAVEAT (2026-04-25): re-ingesting a conversation appends new rows but
+    # never reclaims the rows the old version pointed at. After a few
+    # re-ingests the matrix accumulates orphan zero rows. They're harmless
+    # for cosine search (they tie at score 0 and rank below real hits) but
+    # waste disk + RAM. Future fix: track a free-list, or rewrite the matrix
+    # from scratch by walking `Snippet` rows in DB order whenever
+    # `_delete_existing_conversation` runs.
     existing = _load_matrix(corpus_id, kind, dim)
     start = existing.shape[0]
     if rows.shape[0] == 0:

@@ -17,7 +17,7 @@ from db import Conversation, Corpus, Snippet, Word, session
 from encoders import style as style_enc
 from retrieval.explain import explain as explain_snippet
 from retrieval.planner import plan as plan_query
-from retrieval.search import score_query, score_signature
+from retrieval.search import compute_valence, score_query, score_signature
 
 router = APIRouter(prefix="/api")
 
@@ -156,6 +156,16 @@ async def corpus_query(corpus_id: int, request: Request):
         },
         "scores": scores,
     }
+
+
+@router.get("/corpora/{corpus_id}/valence")
+def corpus_valence(corpus_id: int):
+    """Per-snippet emotional valence in [0, 1]; default tile shading."""
+    try:
+        scores = compute_valence(corpus_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Valence error: {e}")
+    return {"scores": scores}
 
 
 @router.post("/corpora/{corpus_id}/similar")
