@@ -11,8 +11,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from sqlmodel import select
 
-from audio.pipeline import ensure_corpus, ingest_transcript_only
-from config import TRANSCRIPTS_DIR, find_audio_for
+from config import find_audio_for
 from db import Conversation, Corpus, Snippet, Word, session
 from encoders import style as style_enc
 from retrieval.explain import explain as explain_snippet
@@ -20,30 +19,6 @@ from retrieval.planner import plan as plan_query
 from retrieval.search import compute_valence, score_query, score_signature
 
 router = APIRouter(prefix="/api")
-
-
-@router.post("/transcripts/{conversation_name}/register")
-def register_transcript_conversation(conversation_name: str):
-    """
-    Register a transcript JSON as a DB Conversation so it can be referenced
-    by clips in an anthology even when there's no audio corpus. Idempotent:
-    if already registered in the default corpus, returns the id.
-    """
-    transcript_path = TRANSCRIPTS_DIR / f"{conversation_name}.json"
-    if not transcript_path.is_file():
-        raise HTTPException(status_code=404, detail=f"Transcript not found at {transcript_path}")
-    corpus_id = ensure_corpus("transcripts-default", source_root=str(TRANSCRIPTS_DIR))
-    with session() as s:
-        existing = s.exec(
-            select(Conversation).where(
-                Conversation.corpus_id == corpus_id,
-                Conversation.title == conversation_name,
-            )
-        ).first()
-        if existing:
-            return {"conversation_id": existing.id, "corpus_id": corpus_id}
-    conv_id = ingest_transcript_only(corpus_id, conversation_name, str(transcript_path))
-    return {"conversation_id": conv_id, "corpus_id": corpus_id}
 
 
 @router.get("/corpora")

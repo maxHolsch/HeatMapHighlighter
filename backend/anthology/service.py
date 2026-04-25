@@ -67,6 +67,7 @@ def get_anthology(anth_id: int) -> Dict:
                     "end_sec": c.end_sec,
                     "tags": json.loads(c.tags_json or "[]"),
                     "curator_note": c.curator_note,
+                    "clip_text": c.clip_text or "",
                     "source": c.source,
                     "source_ref": c.source_ref,
                 })
@@ -144,6 +145,7 @@ def add_clip(
     end_sec: float,
     tags: Optional[List[str]] = None,
     curator_note: str = "",
+    clip_text: str = "",
     source: str = "manual",
     source_ref: Optional[str] = None,
 ) -> int:
@@ -160,6 +162,7 @@ def add_clip(
             end_sec=end_sec,
             tags_json=json.dumps(tags or []),
             curator_note=curator_note,
+            clip_text=clip_text or "",
             source=source,
             source_ref=source_ref,
         )
@@ -175,6 +178,7 @@ def update_clip(
     end_sec: Optional[float] = None,
     tags: Optional[List[str]] = None,
     curator_note: Optional[str] = None,
+    clip_text: Optional[str] = None,
     section_id: Optional[int] = None,
     idx: Optional[int] = None,
 ) -> None:
@@ -190,6 +194,8 @@ def update_clip(
             c.tags_json = json.dumps(tags)
         if curator_note is not None:
             c.curator_note = curator_note
+        if clip_text is not None:
+            c.clip_text = clip_text
         if section_id is not None:
             c.section_id = section_id
         if idx is not None:
@@ -227,12 +233,18 @@ def reorder_sections(anth_id: int, ordered_section_ids: List[int]) -> None:
 
 
 def clip_transcript(conversation_id: int, start_sec: float, end_sec: float) -> Dict:
-    """Extract the per-word transcript between [start, end] for a clip."""
+    """Extract the per-word transcript strictly within the clip's span.
+
+    Returns only the words whose midpoint falls inside [start_sec, end_sec].
+    Snippet bodies are intentionally excluded — anthologies should never
+    expose text outside the lifted span (the original corpus still has it).
+    Speaker labels are attached to each word from the parent snippet for
+    downstream display.
+    """
     with session() as s:
         snippets = list(s.exec(
             select(Snippet).where(Snippet.conversation_id == conversation_id).order_by(Snippet.idx)  # type: ignore[attr-defined]
         ).all())
-        out_snips = []
         out_words = []
         for snip in snippets:
             if snip.end_sec < start_sec or snip.start_sec > end_sec:
@@ -240,26 +252,15 @@ def clip_transcript(conversation_id: int, start_sec: float, end_sec: float) -> D
             words = list(s.exec(
                 select(Word).where(Word.snippet_id == snip.id).order_by(Word.idx)  # type: ignore[attr-defined]
             ).all())
-            kept_words = []
             for w in words:
-                if w.end_sec < start_sec or w.start_sec > end_sec:
+                mid = (w.start_sec + w.end_sec) / 2.0
+                if mid < start_sec or mid > end_sec:
                     continue
-                kept_words.append({
+                out_words.append({
                     "start_sec": w.start_sec,
                     "end_sec": w.end_sec,
                     "text": w.text,
+                    "speaker_id": snip.speaker_id,
+                    "speaker_name": snip.speaker_name,
                 })
-            if not kept_words and words:
-                # Keep at least the snippet text if no words overlap cleanly.
-                pass
-            out_snips.append({
-                "idx": snip.idx,
-                "start_sec": snip.start_sec,
-                "end_sec": snip.end_sec,
-                "speaker_id": snip.speaker_id,
-                "speaker_name": snip.speaker_name,
-                "text": snip.text,
-                "words": kept_words,
-            })
-            out_words.extend(kept_words)
-        return {"snippets": out_snips, "words": out_words}
+        return {"words": out_words}

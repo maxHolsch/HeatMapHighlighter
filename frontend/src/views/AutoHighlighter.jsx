@@ -4,17 +4,17 @@ import {
   Modal, Select, TextInput,
 } from '../components/primitives';
 import {
-  fetchConversations, fetchTranscript,
+  fetchTranscript,
   runEndToEndPipeline, previewModularPrompt,
   fetchPredictionFiles, fetchPrediction,
   fetchSpanPredictionFiles, fetchSpanPrediction,
   saveHighlights,
-  fetchAnthologies, createAnthology, upsertSection, addClip,
-  registerTranscriptConversation,
   estimateRunCost,
   fetchPricing,
   audioUrl,
+  fetchCorpora, fetchCorpusConversations,
 } from '../api';
+import LiftToAnthologyModal from '../components/LiftToAnthologyModal';
 
 function fmtUsd(n) {
   if (n == null || Number.isNaN(n)) return '$—';
@@ -65,8 +65,11 @@ function normalizeHighlights(arr) {
 }
 
 export default function AutoHighlighter({ tweaks }) {
+  const [corpora, setCorpora] = useState([]);
+  const [corpusId, setCorpusId] = useState('');
+  // conversations: [{ id: dbId, title: stem }, ...]
   const [conversations, setConversations] = useState([]);
-  const [conv, setConv] = useState('');
+  const [conv, setConv] = useState(''); // selected title (also pipeline route key)
   const [transcript, setTranscript] = useState(null);
   const [theme, setTheme] = useState('housing displacement, rent burden, eviction stories');
   const [definition, setDefinition] = useState(
@@ -106,13 +109,23 @@ export default function AutoHighlighter({ tweaks }) {
   const showThreshold = tweaks.threshold ?? 5;
 
   useEffect(() => {
-    fetchConversations().then(setConversations).catch((e) => setError(e.message));
+    fetchCorpora().then((list) => {
+      setCorpora(list || []);
+      if (list && list.length) setCorpusId(String(list[0].id));
+    }).catch((e) => setError(e.message));
     fetchPricing().then((p) => {
       setPricing(p);
       setPass1Model((m) => m || p.models?.pass1_snippet || '');
       setPass2Model((m) => m || p.models?.pass2_span || '');
     }).catch(() => { /* pricing is non-critical; modal will just disable picker */ });
   }, []);
+
+  useEffect(() => {
+    if (!corpusId) { setConversations([]); return; }
+    fetchCorpusConversations(corpusId)
+      .then((rows) => setConversations(rows.map((r) => ({ id: r.id, title: r.title }))))
+      .catch((e) => setError(e.message));
+  }, [corpusId]);
 
   useEffect(() => {
     if (!conv) return;
@@ -122,8 +135,19 @@ export default function AutoHighlighter({ tweaks }) {
   }, [conv]);
 
   useEffect(() => {
-    if (conversations.length && !conv) setConv(conversations[0]);
+    if (conversations.length && !conv) setConv(conversations[0].title);
   }, [conversations, conv]);
+
+  // If the active conversation no longer exists in the loaded corpus list,
+  // reset so the dropdown stays in sync.
+  useEffect(() => {
+    if (conv && !conversations.some((c) => c.title === conv)) setConv('');
+  }, [conversations, conv]);
+
+  const activeConv = useMemo(
+    () => conversations.find((c) => c.title === conv) || null,
+    [conversations, conv]
+  );
 
   useEffect(() => () => { if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current); }, []);
 
@@ -414,9 +438,16 @@ export default function AutoHighlighter({ tweaks }) {
                 <Badge kind="ink" size="sm" dot>Modular</Badge>
               </div>
 
+              {corpora.length > 1 && (
+                <FieldLabel n="00" label="Corpus">
+                  <Select value={corpusId} onChange={setCorpusId}
+                    options={corpora.map((c) => ({ value: String(c.id), label: c.name }))}/>
+                </FieldLabel>
+              )}
               <FieldLabel n="01" label="Conversation">
                 <Select value={conv} onChange={setConv}
-                  options={conversations} placeholder={conversations.length ? '' : 'Loading…'}/>
+                  options={conversations.map((c) => ({ value: c.title, label: c.title }))}
+                  placeholder={conversations.length ? '' : 'Loading…'}/>
               </FieldLabel>
 
               <FieldLabel n="02" label="Theme">
@@ -626,11 +657,12 @@ export default function AutoHighlighter({ tweaks }) {
         </Modal>
       )}
 
-      {showLift && (
+      {showLift && activeConv && (
         <LiftToAnthologyModal
-          conversation={conv}
-          highlights={highlights}
-          snippets={snippets}
+          drafts={buildDraftsFromAcceptedSpans(highlights, snippets, activeConv.id)}
+          defaultName={`Highlights from ${activeConv.title}`}
+          defaultSection={`From ${activeConv.title}`}
+          liftLabel="spans kept"
           onClose={() => setShowLift(false)}
           onDone={() => { setShowLift(false); alert('Lifted to anthology.'); }}
           setError={setError}
@@ -1483,126 +1515,60 @@ function SliderHandle({ pct, active, onPointerDown }) {
 }
 
 // =====================================================================
-//  Lift-to-anthology modal (now span-level: one clip per accepted span)
-//  + running overlay
+//  Running overlay
 // =====================================================================
 
-function LiftToAnthologyModal({ conversation, highlights, snippets, onClose, onDone, setError }) {
-  const [mode, setMode] = useState('new');
-  const [anthologies, setAnthologies] = useState([]);
-  const [selectedAnth, setSelectedAnth] = useState('');
-  const [name, setName] = useState(`Highlights from ${conversation.replace(/\.json$/, '')}`);
-  const [sectionTitle, setSectionTitle] = useState(`From ${conversation.replace(/\.json$/, '')}`);
-  const [busy, setBusy] = useState(false);
-
-  // Flatten all accepted spans across highlights — one clip per span.
-  const acceptedSpanRefs = [];
-  highlights.forEach((hl) => {
-    hl.spans?.forEach((sp) => {
-      if (sp.status === 'accepted') acceptedSpanRefs.push({ hl, sp });
-    });
-  });
-
-  useEffect(() => {
-    fetchAnthologies().then((list) => {
-      setAnthologies(list || []);
-      if (list && list.length) setSelectedAnth(String(list[0].id));
-    }).catch((e) => setError(e.message));
-  }, [setError]);
-
-  async function commit() {
-    setBusy(true);
-    try {
-      const reg = await registerTranscriptConversation(conversation);
-      const conversation_id = reg.conversation_id;
-
-      let anthId;
-      if (mode === 'new') {
-        const r = await createAnthology(name, '');
-        anthId = r.id;
-      } else {
-        anthId = parseInt(selectedAnth, 10);
-      }
-      const sec = await upsertSection(anthId, { title: sectionTitle, intro: '' });
-      const sectionId = sec.section_id;
-
-      for (const { hl, sp } of acceptedSpanRefs) {
-        const sn = snippets[sp.snippet_index];
-        if (!sn) continue;
-        await addClip({
-          section_id: sectionId,
-          conversation_id,
-          start_sec: sn.audio_start_offset,
-          end_sec: sn.audio_end_offset,
-          tags: [],
-          curator_note: hl.reasoning || '',
-          source: 'pass2_span',
-          source_ref: `${hl.id}#${sp.snippet_index}`,
-        });
-      }
-      onDone();
-    } catch (e) {
-      setError(e.message);
-      setBusy(false);
-    }
+// Map a span's [char_start, char_end] within a snippet's joined transcript to
+// the audio range covered by the words it overlaps. Falls back to the whole
+// snippet if word-level data is missing or no word overlaps cleanly.
+function spanCharRangeToAudio(snippet, charStart, charEnd) {
+  const words = snippet?.words || [];
+  const fallbackStart = snippet?.audio_start_offset ?? 0;
+  const fallbackEnd = snippet?.audio_end_offset ?? fallbackStart;
+  if (!words.length || charStart == null || charEnd == null || charEnd <= charStart) {
+    return [fallbackStart, fallbackEnd];
   }
-
-  return (
-    <Modal onClose={onClose} maxWidth={520}>
-      <Eyebrow color="var(--cadmium)">Lift to anthology</Eyebrow>
-      <Display size={30} style={{ marginTop: 6 }}>{acceptedSpanRefs.length} <Em>spans kept</Em>.</Display>
-      <div style={{ marginTop: 18, display: 'flex', gap: 8 }}>
-        <ModeBtn active={mode === 'new'} onClick={() => setMode('new')}>New anthology</ModeBtn>
-        <ModeBtn active={mode === 'existing'} onClick={() => setMode('existing')} disabled={!anthologies.length}>
-          Append to existing
-        </ModeBtn>
-      </div>
-      <div style={{ marginTop: 18 }}>
-        {mode === 'new' ? (
-          <div>
-            <FieldLabel n="A" label="Anthology name">
-              <TextInput value={name} onChange={setName}/>
-            </FieldLabel>
-            <FieldLabel n="B" label="Section title">
-              <TextInput value={sectionTitle} onChange={setSectionTitle}/>
-            </FieldLabel>
-          </div>
-        ) : (
-          <div>
-            <FieldLabel n="A" label="Anthology">
-              <Select value={selectedAnth} onChange={setSelectedAnth}
-                options={anthologies.map((a) => ({ value: String(a.id), label: a.name }))}/>
-            </FieldLabel>
-            <FieldLabel n="B" label="New section title">
-              <TextInput value={sectionTitle} onChange={setSectionTitle}/>
-            </FieldLabel>
-          </div>
-        )}
-      </div>
-      <div style={{ display: 'flex', gap: 10, marginTop: 22, justifyContent: 'flex-end' }}>
-        <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-        <Btn kind="vermil" icon="book" onClick={commit} disabled={busy || acceptedSpanRefs.length === 0}>
-          {busy ? 'Lifting…' : `Lift ${acceptedSpanRefs.length}`}
-        </Btn>
-      </div>
-    </Modal>
-  );
+  let pos = 0;
+  let firstWord = -1;
+  let lastWord = -1;
+  for (let i = 0; i < words.length; i++) {
+    const wText = words[i].word ?? words[i].text ?? '';
+    const wStart = pos;
+    const wEnd = pos + wText.length;
+    if (wStart < charEnd && wEnd > charStart) {
+      if (firstWord === -1) firstWord = i;
+      lastWord = i;
+    }
+    pos = wEnd + 1; // " " separator between words
+  }
+  if (firstWord === -1) return [fallbackStart, fallbackEnd];
+  const a = words[firstWord].audio_start_offset ?? words[firstWord].start_sec ?? fallbackStart;
+  const b = words[lastWord].audio_end_offset ?? words[lastWord].end_sec ?? fallbackEnd;
+  return [a, b];
 }
 
-function ModeBtn({ active, onClick, children, disabled }) {
-  return (
-    <button onClick={onClick} disabled={disabled}
-      style={{
-        fontFamily: 'var(--font-mono)', fontSize: 11,
-        padding: '6px 12px', borderRadius: 999,
-        border: '2px solid var(--ink)',
-        background: active ? 'var(--ink)' : 'var(--paper)',
-        color: active ? 'var(--paper)' : 'var(--ink)',
-        cursor: disabled ? 'not-allowed' : 'pointer',
-        opacity: disabled ? 0.4 : 1,
-        textTransform: 'uppercase', letterSpacing: '0.08em',
-      }}>{children}</button>
-  );
+// Flatten accepted spans across highlights into draft clips for the shared
+// lift-to-anthology modal. One clip per accepted span.
+function buildDraftsFromAcceptedSpans(highlights, snippets, conversationId) {
+  const out = [];
+  highlights.forEach((hl) => {
+    hl.spans?.forEach((sp) => {
+      if (sp.status !== 'accepted') return;
+      const sn = snippets[sp.snippet_index];
+      if (!sn) return;
+      const [startSec, endSec] = spanCharRangeToAudio(sn, sp.char_start, sp.char_end);
+      out.push({
+        conversation_id: conversationId,
+        start_sec: startSec,
+        end_sec: endSec,
+        curator_note: hl.reasoning || '',
+        clip_text: sp.text || '',
+        source: 'pass2_span',
+        source_ref: `${hl.id}#${sp.snippet_index}`,
+      });
+    });
+  });
+  return out;
 }
 
 function RunningOverlay({ elapsed, estimate }) {

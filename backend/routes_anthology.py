@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response
 
 from anthology import service
-from anthology.export import build_dataset_zip, build_karaoke_zip
+from anthology.export import build_dataset_zip, build_karaoke_manifest, build_karaoke_zip
 
 router = APIRouter(prefix="/api")
 
@@ -87,6 +87,7 @@ async def add_clip(request: Request):
             end_sec=float(body["end_sec"]),
             tags=body.get("tags"),
             curator_note=body.get("curator_note") or "",
+            clip_text=body.get("clip_text") or "",
             source=body.get("source") or "manual",
             source_ref=body.get("source_ref"),
         )
@@ -105,6 +106,7 @@ async def update_clip(clip_id: int, request: Request):
             end_sec=body.get("end_sec"),
             tags=body.get("tags"),
             curator_note=body.get("curator_note"),
+            clip_text=body.get("clip_text"),
             section_id=body.get("section_id"),
             idx=body.get("idx"),
         )
@@ -125,6 +127,20 @@ async def reorder_clips(section_id: int, request: Request):
     ids = body.get("clip_ids") or []
     service.reorder_clips(section_id, ids)
     return {"ok": True}
+
+
+@router.get("/anthologies/{anth_id}/karaoke")
+def karaoke_manifest(anth_id: int):
+    """JSON manifest powering the in-app karaoke preview. Each clip's audio
+    points at the existing /api/conversations/{id}/audio?start=&end= slice
+    endpoint, so the browser streams the same WAV bytes the export bundle
+    would write to disk."""
+    def audio_url(clip_id: int, conversation_id: int, start: float, end: float) -> str:
+        return f"/api/conversations/{conversation_id}/audio?start={start}&end={end}"
+    try:
+        return build_karaoke_manifest(anth_id, audio_url_for_clip=audio_url)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 @router.get("/anthologies/{anth_id}/export")

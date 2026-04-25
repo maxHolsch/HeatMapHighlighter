@@ -45,17 +45,26 @@ def clean_raw_transcript(raw_json: dict) -> List[Dict]:
     Turn a raw transcript JSON into a flat list of cleaned snippets.
 
     Each output snippet has:
-        audio_start_offset, audio_end_offset, speaker_id, speaker_name, transcript
+        audio_start_offset, audio_end_offset, speaker_id, speaker_name,
+        transcript, words
+
+    `words` is the per-word ASR list with audio_start_offset/audio_end_offset/
+    word, preserved so downstream consumers (e.g. the lift-to-anthology flow)
+    can map char offsets within `transcript` back to per-word audio timing.
+    Note: `transcript` is " ".join(w["word"]) — keep this in sync with how
+    char offsets are computed.
     """
     cleaned = []
     for snippet in raw_json.get("snippets", []):
-        text = " ".join(w["word"] for w in snippet.get("words", []))
+        words = snippet.get("words", []) or []
+        text = " ".join(w["word"] for w in words)
         cleaned.append({
             "audio_start_offset": snippet.get("audio_start_offset"),
             "audio_end_offset": snippet.get("audio_end_offset"),
             "speaker_id": snippet.get("speaker_id"),
             "speaker_name": snippet.get("speaker_name"),
             "transcript": text.strip(),
+            "words": words,
         })
     return cleaned
 
@@ -76,6 +85,7 @@ def _merge_pair(a: Dict, b: Dict) -> Dict:
     merged["audio_end_offset"] = b["audio_end_offset"]
     merged["transcript"] = a["transcript"].rstrip() + " " + b["transcript"].lstrip()
     merged["_orig_indices"] = a["_orig_indices"] + b["_orig_indices"]
+    merged["words"] = (a.get("words") or []) + (b.get("words") or [])
     return merged
 
 
@@ -179,6 +189,7 @@ def _load_from_db(conversation_id: str) -> Tuple[List[Dict], Optional[Dict]]:
 
     Returns (snippets, meta) — meta carries db_id/audio info for the FE.
     """
+    from db import Word
     with session() as s:
         conv = s.exec(
             select(Conversation).where(Conversation.title == conversation_id)
@@ -190,16 +201,26 @@ def _load_from_db(conversation_id: str) -> Tuple[List[Dict], Optional[Dict]]:
             .where(Snippet.conversation_id == conv.id)
             .order_by(Snippet.idx)
         ).all()
-        snippets = [
-            {
+        snippets = []
+        for r in rows:
+            word_rows = s.exec(
+                select(Word).where(Word.snippet_id == r.id).order_by(Word.idx)
+            ).all()
+            snippets.append({
                 "audio_start_offset": r.start_sec,
                 "audio_end_offset": r.end_sec,
                 "speaker_id": r.speaker_id,
                 "speaker_name": r.speaker_name,
                 "transcript": (r.text or "").strip(),
-            }
-            for r in rows
-        ]
+                "words": [
+                    {
+                        "audio_start_offset": w.start_sec,
+                        "audio_end_offset": w.end_sec,
+                        "word": w.text,
+                    }
+                    for w in word_rows
+                ],
+            })
         meta = {
             "db_id": conv.id,
             "has_audio": bool(conv.audio_path),

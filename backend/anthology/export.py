@@ -1,13 +1,15 @@
 """
 Anthology exports:
-    - Working dataset: anthology.json + transcripts/ + audio/ + README.md
+    - Working dataset: anthology.json + clips.csv + transcripts/ + audio/ + README.md
     - Karaoke HTML bundle: self-contained player with word-sync highlighting
 
-Both are zipped into one .zip; downstream the UI exposes either/both.
+Both are zipped into one .zip; downstream the UI exposes either/both. The same
+karaoke manifest is also served as JSON for the in-app preview.
 """
 
 from __future__ import annotations
 
+import csv
 import io
 import json
 import shutil
@@ -15,7 +17,7 @@ import tempfile
 import zipfile
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 import numpy as np
 import soundfile as sf
@@ -42,6 +44,121 @@ def _cut_clip_wav(audio_path: str, start_sec: float, end_sec: float) -> bytes:
 
 def _clip_filename(clip_id: int) -> str:
     return f"clip_{clip_id:06d}.wav"
+
+
+# ---------------------------------------------------------------------------
+# Shared karaoke manifest (used by both the export bundle and the in-app
+# preview endpoint, so word timings stay identical between them)
+# ---------------------------------------------------------------------------
+
+def build_karaoke_manifest(anth_id: int, audio_url_for_clip=None) -> Dict:
+    """Build the per-clip karaoke payload — sections → clips → word timings
+    rebased to clip-local seconds.
+
+    `audio_url_for_clip(clip_id, conversation_id, start, end) -> str` is an
+    optional callback that returns a URL the browser can stream. When None,
+    no audio reference is attached (the static HTML bundle inlines its own
+    audio paths separately).
+    """
+    anth = get_anthology(anth_id)
+    sections_out: List[Dict] = []
+    with session() as s:
+        for sec in anth["sections"]:
+            clips_out: List[Dict] = []
+            for clip in sec["clips"]:
+                conv = s.get(Conversation, clip["conversation_id"])
+                if not conv:
+                    continue
+                transcript = clip_transcript(
+                    clip["conversation_id"], clip["start_sec"], clip["end_sec"],
+                )
+                words_local = [
+                    {
+                        "text": w["text"],
+                        "start_local": max(0.0, w["start_sec"] - clip["start_sec"]),
+                        "end_local": max(0.0, w["end_sec"] - clip["start_sec"]),
+                    }
+                    for w in transcript["words"]
+                ]
+                clip_payload = {
+                    "id": clip["id"],
+                    "conversation_id": clip["conversation_id"],
+                    "conversation_title": conv.title,
+                    "curator_note": clip["curator_note"],
+                    "clip_text": clip.get("clip_text") or "",
+                    "tags": clip.get("tags") or [],
+                    "start_sec": clip["start_sec"],
+                    "end_sec": clip["end_sec"],
+                    "duration_sec": max(0.0, clip["end_sec"] - clip["start_sec"]),
+                    "has_audio": bool(conv.audio_path and Path(conv.audio_path).is_file()),
+                    "words": words_local,
+                }
+                if audio_url_for_clip and clip_payload["has_audio"]:
+                    clip_payload["audio_url"] = audio_url_for_clip(
+                        clip["id"],
+                        clip["conversation_id"],
+                        clip["start_sec"],
+                        clip["end_sec"],
+                    )
+                clips_out.append(clip_payload)
+            sections_out.append({
+                "id": sec["id"],
+                "title": sec["title"],
+                "intro": sec["intro"],
+                "clips": clips_out,
+            })
+    return {
+        "id": anth["id"],
+        "name": anth["name"],
+        "preface": anth["preface"],
+        "sections": sections_out,
+    }
+
+
+# ---------------------------------------------------------------------------
+# CSV (one row per clip, included in the dataset zip)
+# ---------------------------------------------------------------------------
+
+CSV_COLUMNS = [
+    "section_idx", "section_title",
+    "clip_idx", "clip_id",
+    "conversation_id", "conversation_title",
+    "start_sec", "end_sec", "duration_sec",
+    "tags", "source", "source_ref",
+    "curator_note", "clip_text",
+    "audio_file", "transcript_file",
+]
+
+
+def _build_clips_csv(anth: Dict) -> str:
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=CSV_COLUMNS)
+    writer.writeheader()
+    with session() as s:
+        for sec in anth["sections"]:
+            for clip in sec["clips"]:
+                conv = s.get(Conversation, clip["conversation_id"])
+                has_audio = bool(conv and conv.audio_path and Path(conv.audio_path).is_file())
+                wav_name = _clip_filename(clip["id"])
+                writer.writerow({
+                    "section_idx": sec["idx"],
+                    "section_title": sec["title"],
+                    "clip_idx": clip["idx"],
+                    "clip_id": clip["id"],
+                    "conversation_id": clip["conversation_id"],
+                    "conversation_title": conv.title if conv else "",
+                    "start_sec": f"{clip['start_sec']:.3f}",
+                    "end_sec": f"{clip['end_sec']:.3f}",
+                    "duration_sec": f"{max(0.0, clip['end_sec'] - clip['start_sec']):.3f}",
+                    "tags": "|".join(clip.get("tags") or []),
+                    "source": clip.get("source") or "",
+                    "source_ref": clip.get("source_ref") or "",
+                    "curator_note": (clip.get("curator_note") or "").replace("\n", " ").strip(),
+                    "clip_text": (clip.get("clip_text") or "").replace("\n", " ").strip(),
+                    "audio_file": f"audio/{wav_name}" if has_audio else "",
+                    "transcript_file": f"transcripts/{wav_name.replace('.wav', '.json')}",
+                })
+    return buf.getvalue()
 
 
 # ---------------------------------------------------------------------------
@@ -87,6 +204,17 @@ def build_dataset_zip(anth_id: int) -> bytes:
                         clip["start_sec"],
                         clip["end_sec"],
                     )
+                    span_words = [
+                        {
+                            "text": w["text"],
+                            "start_local": max(0.0, w["start_sec"] - clip["start_sec"]),
+                            "end_local": max(0.0, w["end_sec"] - clip["start_sec"]),
+                            "speaker_id": w.get("speaker_id"),
+                            "speaker_name": w.get("speaker_name"),
+                        }
+                        for w in transcript["words"]
+                    ]
+                    span_text = " ".join(w["text"] for w in transcript["words"]).strip()
                     clip_manifest = {
                         "id": clip["id"],
                         "idx": clip["idx"],
@@ -98,10 +226,17 @@ def build_dataset_zip(anth_id: int) -> bytes:
                         "curator_note": clip["curator_note"],
                         "source": clip["source"],
                     }
-                    # Transcript JSON
+                    # Transcript JSON — only the words inside the span (no
+                    # surrounding snippet text leaks in).
                     zf.writestr(
                         f"transcripts/{_clip_filename(clip['id']).replace('.wav', '.json')}",
-                        json.dumps(transcript, indent=2, ensure_ascii=False),
+                        json.dumps({
+                            "clip_id": clip["id"],
+                            "start_sec": clip["start_sec"],
+                            "end_sec": clip["end_sec"],
+                            "text": span_text,
+                            "words": span_words,
+                        }, indent=2, ensure_ascii=False),
                     )
                     # Audio WAV (only if source audio is available)
                     if conv.audio_path and Path(conv.audio_path).is_file():
@@ -123,6 +258,7 @@ def build_dataset_zip(anth_id: int) -> bytes:
                 readme_lines.append("")
 
         zf.writestr("anthology.json", json.dumps(manifest, indent=2, ensure_ascii=False))
+        zf.writestr("clips.csv", _build_clips_csv(anth))
         zf.writestr(
             "metadata.json",
             json.dumps(
@@ -251,34 +387,20 @@ for (const section of anthology.sections) {
 
 def build_karaoke_zip(anth_id: int, embed_audio: bool = False) -> bytes:
     """Standalone HTML bundle with word-synced transcript."""
-    anth = get_anthology(anth_id)
+    base = build_karaoke_manifest(anth_id)
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         manifest_sections = []
         with session() as s:
-            for sec in anth["sections"]:
+            for sec in base["sections"]:
                 manifest_clips = []
                 for clip in sec["clips"]:
                     conv = s.get(Conversation, clip["conversation_id"])
                     if not conv:
                         continue
-                    transcript = clip_transcript(
-                        clip["conversation_id"],
-                        clip["start_sec"],
-                        clip["end_sec"],
-                    )
-                    # Re-base word timestamps to clip-local.
-                    words_local = [
-                        {
-                            "text": w["text"],
-                            "start_local": max(0.0, w["start_sec"] - clip["start_sec"]),
-                            "end_local": max(0.0, w["end_sec"] - clip["start_sec"]),
-                        }
-                        for w in transcript["words"]
-                    ]
                     audio_ref = ""
-                    if conv.audio_path and Path(conv.audio_path).is_file():
+                    if clip["has_audio"]:
                         wav_bytes = _cut_clip_wav(
                             conv.audio_path, clip["start_sec"], clip["end_sec"]
                         )
@@ -291,12 +413,12 @@ def build_karaoke_zip(anth_id: int, embed_audio: bool = False) -> bytes:
                             audio_ref = f"data:audio/wav;base64,{b64}"
                     manifest_clips.append({
                         "id": clip["id"],
-                        "conversation_title": conv.title,
+                        "conversation_title": clip["conversation_title"],
                         "curator_note": clip["curator_note"],
                         "start_sec": clip["start_sec"],
                         "end_sec": clip["end_sec"],
                         "audio": audio_ref,
-                        "words": words_local,
+                        "words": clip["words"],
                     })
                 manifest_sections.append({
                     "title": sec["title"],
@@ -305,21 +427,23 @@ def build_karaoke_zip(anth_id: int, embed_audio: bool = False) -> bytes:
                 })
 
         manifest = {
-            "name": anth["name"],
-            "preface": anth["preface"],
+            "name": base["name"],
+            "preface": base["preface"],
             "sections": manifest_sections,
         }
 
         preface_html = (
-            f'<p class="preface">{_escape(anth["preface"])}</p>' if anth["preface"] else ""
+            f'<p class="preface">{_escape(base["preface"])}</p>' if base["preface"] else ""
         )
         html = (
             KARAOKE_HTML
-            .replace("{title}", _escape(anth["name"]))
+            .replace("{title}", _escape(base["name"]))
             .replace("{preface_html}", preface_html)
             .replace("{anthology_json}", json.dumps(manifest, ensure_ascii=False))
         )
         zf.writestr("index.html", html)
+        # Include CSV alongside the karaoke HTML for convenience.
+        zf.writestr("clips.csv", _build_clips_csv(get_anthology(anth_id)))
     return buf.getvalue()
 
 

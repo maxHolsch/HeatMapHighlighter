@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Btn, Badge, Burst, Card, Display, Em, Eyebrow, GShape, Icon, Select,
 } from '../components/primitives';
@@ -7,6 +7,7 @@ import {
   fetchSnippetDetail, explainSnippet, audioUrl,
   fetchCorpusValence,
 } from '../api';
+import LiftToAnthologyModal from '../components/LiftToAnthologyModal';
 
 function heatColor(score, max = 10) {
   const h = Math.max(0, Math.min(1, score / max));
@@ -16,6 +17,32 @@ function heatColor(score, max = 10) {
   if (h < 0.70) return 'var(--vermillion-soft)';
   if (h < 0.85) return 'var(--vermillion)';
   return 'var(--hotpink)';
+}
+
+function spanCharRangeToAudio(snippet, charStart, charEnd) {
+  const words = snippet?.words || [];
+  const fallbackStart = snippet?.start_sec ?? 0;
+  const fallbackEnd = snippet?.end_sec ?? fallbackStart;
+  if (!words.length || charStart == null || charEnd == null || charEnd <= charStart) {
+    return [fallbackStart, fallbackEnd];
+  }
+  let pos = 0;
+  let firstWord = -1;
+  let lastWord = -1;
+  for (let i = 0; i < words.length; i++) {
+    const wText = words[i].word ?? words[i].text ?? '';
+    const wStart = pos;
+    const wEnd = pos + wText.length;
+    if (wStart < charEnd && wEnd > charStart) {
+      if (firstWord === -1) firstWord = i;
+      lastWord = i;
+    }
+    pos = wEnd + 1;
+  }
+  if (firstWord === -1) return [fallbackStart, fallbackEnd];
+  const a = words[firstWord].audio_start_offset ?? words[firstWord].start_sec ?? fallbackStart;
+  const b = words[lastWord].audio_end_offset ?? words[lastWord].end_sec ?? fallbackEnd;
+  return [a, b];
 }
 
 function adaptCorpus(snippetsResponse, corpusMeta) {
@@ -28,6 +55,7 @@ function adaptCorpus(snippetsResponse, corpusMeta) {
       id: s.snippet_id,
       conversation_id: c.conversation_id,
       index: s.idx,
+      text: s.text,
       preview: s.text,
       start_sec: s.start_sec,
       end_sec: s.end_sec,
@@ -58,6 +86,7 @@ export default function CorpusHeatmap() {
   const [focus, setFocus] = useState(null);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState(null);
+  const [lift, setLift] = useState(null); // null | { drafts, defaultName, defaultSection, liftLabel }
 
   useEffect(() => {
     fetchCorpora().then((list) => {
@@ -116,6 +145,56 @@ export default function CorpusHeatmap() {
     }
     return null;
   }, [focus, corpus]);
+
+  function liftSnippet(sn, draft = null) {
+    if (!sn && !draft) return;
+    setLift({
+      drafts: [draft || {
+        conversation_id: sn.conversation_id,
+        start_sec: sn.start_sec,
+        end_sec: sn.end_sec,
+        curator_note: query ? `Match for: ${query}` : '',
+        clip_text: sn.text || sn.preview || '',
+        source: 'corpus_snippet',
+        source_ref: `snippet:${sn.id}`,
+      }],
+      defaultName: query ? `Saved from "${query}"` : 'Saved from corpus',
+      defaultSection: sn.conversation_title || 'New section',
+      liftLabel: draft?.source === 'corpus_span' ? 'span' : 'snippet',
+    });
+  }
+
+  function liftTopMatches() {
+    if (!corpus || !hasQuery) return;
+    const above = Object.entries(scoreMap)
+      .map(([sid, sc]) => [Number(sid), sc])
+      .filter(([, sc]) => sc >= threshold)
+      .sort((a, b) => b[1] - a[1]);
+    if (!above.length) return;
+    const byId = new Map();
+    corpus.conversations.forEach((c) => c.snippets.forEach((sn) => byId.set(sn.id, { sn, conv: c })));
+    const drafts = [];
+    for (const [sid, sc] of above) {
+      const hit = byId.get(sid);
+      if (!hit) continue;
+      drafts.push({
+        conversation_id: hit.conv.id,
+        start_sec: hit.sn.start_sec,
+        end_sec: hit.sn.end_sec,
+        curator_note: `score=${sc.toFixed(2)} · query="${query}"`,
+        clip_text: hit.sn.text || hit.sn.preview || '',
+        source: 'corpus_query',
+        source_ref: `snippet:${sid}`,
+      });
+    }
+    if (!drafts.length) return;
+    setLift({
+      drafts,
+      defaultName: `Saved from "${query}"`,
+      defaultSection: `Top matches (${drafts.length})`,
+      liftLabel: drafts.length === 1 ? 'match' : 'matches',
+    });
+  }
 
   return (
     <div style={{ padding: '28px 36px 60px', maxWidth: 1400, margin: '0 auto' }}>
@@ -193,13 +272,18 @@ export default function CorpusHeatmap() {
                 {hasQuery ? <>Heat against your <Em>question</Em>.</> : <>Pick a question.</>}
               </h3>
             </div>
-            <div style={{ display: 'flex', gap: 8 }}>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
               <Badge kind={hasQuery ? 'danger' : 'default'} dot={hasQuery}>
                 {hasQuery ? 'scored' : 'unsorted'}
               </Badge>
               <Badge kind="info">
                 {corpus?.conversations.reduce((a, c) => a + c.num_snippets, 0) ?? 0} snippets
               </Badge>
+              {hasQuery && (
+                <Btn size="sm" kind="cadmium" icon="book" onClick={liftTopMatches}>
+                  Lift top matches
+                </Btn>
+              )}
             </div>
           </div>
 
@@ -212,9 +296,23 @@ export default function CorpusHeatmap() {
 
         {focusSnippet && (
           <DetailPanel snippet={focusSnippet} score={scoreMap[focusSnippet.id]} decomp={decomp}
-            onClose={() => setFocus(null)}/>
+            onClose={() => setFocus(null)}
+            query={query}
+            onLift={(draft) => liftSnippet(focusSnippet, draft)}/>
         )}
       </div>
+
+      {lift && (
+        <LiftToAnthologyModal
+          drafts={lift.drafts}
+          defaultName={lift.defaultName}
+          defaultSection={lift.defaultSection}
+          liftLabel={lift.liftLabel}
+          onClose={() => setLift(null)}
+          onDone={() => { setLift(null); alert('Lifted to anthology.'); }}
+          setError={setError}
+        />
+      )}
 
       {running && <RunningOverlay/>}
     </div>
@@ -334,14 +432,20 @@ function Fan({ conversation, ci, scoreMap, valenceMap, topRankMap, threshold, fo
   );
 }
 
-function DetailPanel({ snippet, score, decomp, onClose }) {
+function DetailPanel({ snippet, score, decomp, onClose, onLift, query }) {
   const [detail, setDetail] = useState(null);
   const [explanation, setExplanation] = useState(null);
+  const [spanRange, setSpanRange] = useState({ char_start: 0, char_end: (snippet.preview || '').length });
 
   useEffect(() => {
     setDetail(null); setExplanation(null);
     fetchSnippetDetail(snippet.id).then(setDetail).catch(() => {});
   }, [snippet.id]);
+
+  useEffect(() => {
+    const nextText = detail?.snippet?.text || snippet.text || snippet.preview || '';
+    setSpanRange({ char_start: 0, char_end: nextText.length });
+  }, [snippet.id, detail?.snippet?.text, snippet.text, snippet.preview]);
 
   useEffect(() => {
     if (!decomp || score === undefined) return;
@@ -351,9 +455,24 @@ function DetailPanel({ snippet, score, decomp, onClose }) {
     }).then((r) => setExplanation(r.explanation)).catch(() => {});
   }, [snippet.id, decomp, score]);
 
-  const text = detail?.snippet?.text || snippet.preview;
+  const text = detail?.snippet?.text || snippet.text || snippet.preview || '';
   const start = detail?.snippet?.start_sec ?? snippet.start_sec;
   const end = detail?.snippet?.end_sec ?? snippet.end_sec;
+  const [selectedStart, selectedEnd] = spanCharRangeToAudio(detail?.snippet || snippet, spanRange.char_start, spanRange.char_end);
+  const selectedText = text.slice(spanRange.char_start, spanRange.char_end).trim() || text;
+
+  function handleLift() {
+    if (!onLift) return;
+    onLift({
+      conversation_id: snippet.conversation_id,
+      start_sec: selectedStart,
+      end_sec: selectedEnd,
+      curator_note: query ? `Match for: ${query}` : '',
+      clip_text: selectedText,
+      source: 'corpus_span',
+      source_ref: `snippet:${snippet.id}:${spanRange.char_start}-${spanRange.char_end}`,
+    });
+  }
 
   return (
     <Card padding={0} withGrain={false}>
@@ -374,8 +493,14 @@ function DetailPanel({ snippet, score, decomp, onClose }) {
       </div>
       <div style={{ padding: 18 }}>
         <p style={{ fontFamily: 'var(--font-display)', fontSize: 22, lineHeight: 1.2, margin: 0, color: 'var(--ink)' }}>
-          “{text}”
+          <DrawerSnippetText text={text} editedSpan={spanRange}/>
         </p>
+        <SpanRangeSlider
+          textLen={text.length}
+          charStart={spanRange.char_start}
+          charEnd={spanRange.char_end}
+          onChange={(cs, ce) => setSpanRange({ char_start: cs, char_end: ce })}
+        />
         {score !== undefined && (
           <div style={{ marginTop: 16, padding: 12, background: 'var(--paper-warm)',
             border: '2px solid var(--ink)', borderRadius: 6 }}>
@@ -396,14 +521,118 @@ function DetailPanel({ snippet, score, decomp, onClose }) {
           <div style={{ marginTop: 14, padding: '10px 12px', background: 'var(--paper)',
             border: '2px dashed var(--line-soft)', borderRadius: 6 }}>
             <audio controls preload="none" style={{ width: '100%' }}
-              src={audioUrl(snippet.conversation_id, start, end)}/>
+              src={audioUrl(snippet.conversation_id, selectedStart, selectedEnd)}/>
             <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg-muted)', marginTop: 4 }}>
-              {Math.round(start)}s → {Math.round(end)}s
+              {Math.round(start)}s → {Math.round(end)}s · span {Math.round(selectedStart)}s → {Math.round(selectedEnd)}s
             </div>
+          </div>
+        )}
+        {onLift && (
+          <div style={{ marginTop: 16, display: 'flex', justifyContent: 'flex-end' }}>
+            <Btn size="sm" kind="cadmium" icon="book" onClick={handleLift}>
+              Lift span to anthology
+            </Btn>
           </div>
         )}
       </div>
     </Card>
+  );
+}
+
+function DrawerSnippetText({ text, editedSpan }) {
+  if (!editedSpan) return <span>“{text}”</span>;
+  const cs = Math.max(0, Math.min(text.length, editedSpan.char_start));
+  const ce = Math.max(cs, Math.min(text.length, editedSpan.char_end));
+  const before = text.slice(0, cs);
+  const inner = text.slice(cs, ce);
+  const after = text.slice(ce);
+  return (
+    <>
+      {before}
+      <mark style={{ background: 'var(--cadmium)', padding: '1px 4px',
+        border: '2px solid var(--ink)', borderRadius: 4, boxShadow: '2px 2px 0 0 var(--ink)',
+        color: 'var(--ink)' }}>
+        {inner || ' '}
+      </mark>
+      {after}
+    </>
+  );
+}
+
+function SpanRangeSlider({ textLen, charStart, charEnd, onChange }) {
+  const trackRef = useRef(null);
+  const valuesRef = useRef({ charStart, charEnd, textLen });
+  valuesRef.current = { charStart, charEnd, textLen };
+  const [active, setActive] = useState(null);
+
+  function startDrag(handle, e) {
+    e.preventDefault();
+    e.stopPropagation();
+    setActive(handle);
+
+    function move(ev) {
+      const r = trackRef.current?.getBoundingClientRect();
+      if (!r) return;
+      const t = Math.max(0, Math.min(1, (ev.clientX - r.left) / Math.max(1, r.width)));
+      const cur = valuesRef.current;
+      const c = Math.round(t * cur.textLen);
+      if (handle === 'start') {
+        onChange(Math.max(0, Math.min(c, cur.charEnd - 1)), cur.charEnd);
+      } else {
+        onChange(cur.charStart, Math.max(cur.charStart + 1, Math.min(cur.textLen, c)));
+      }
+    }
+    function up() {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      setActive(null);
+    }
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  }
+
+  const len = Math.max(1, textLen);
+  const leftPct = (charStart / len) * 100;
+  const rightPct = (charEnd / len) * 100;
+
+  return (
+    <div style={{ marginTop: 14 }}>
+      <div ref={trackRef}
+        style={{
+          position: 'relative', height: 26, padding: '11px 0',
+          touchAction: 'none', userSelect: 'none',
+        }}>
+        <div style={{ position: 'absolute', top: 12, left: 0, right: 0, height: 3,
+          background: 'var(--bone)', border: '1.5px solid var(--ink)', borderRadius: 2 }}/>
+        <div style={{
+          position: 'absolute', top: 11, left: `${leftPct}%`,
+          width: `${Math.max(0, rightPct - leftPct)}%`, height: 5,
+          background: 'var(--cadmium)', border: '1.5px solid var(--ink)', borderRadius: 2,
+        }}/>
+        <SliderHandle pct={leftPct} active={active === 'start'} onPointerDown={(e) => startDrag('start', e)}/>
+        <SliderHandle pct={rightPct} active={active === 'end'} onPointerDown={(e) => startDrag('end', e)}/>
+      </div>
+      <div style={{ marginTop: 4, display: 'flex', justifyContent: 'space-between',
+        fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--fg-muted)' }}>
+        <span>start {charStart}</span>
+        <span>{charEnd - charStart} chars selected</span>
+        <span>end {charEnd}</span>
+      </div>
+    </div>
+  );
+}
+
+function SliderHandle({ pct, active, onPointerDown }) {
+  return (
+    <div onPointerDown={onPointerDown}
+      style={{
+        position: 'absolute', top: 5, left: `${pct}%`,
+        width: 18, height: 18, marginLeft: -9,
+        borderRadius: '50%', background: active ? 'var(--vermillion)' : 'var(--paper)',
+        border: '2px solid var(--ink)',
+        boxShadow: active ? '3px 3px 0 0 var(--ink)' : '2px 2px 0 0 var(--ink)',
+        cursor: 'ew-resize', touchAction: 'none', zIndex: 2,
+      }}/>
   );
 }
 

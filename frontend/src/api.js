@@ -64,12 +64,6 @@ export function audioUrl(conversationId, start, end) {
   return `${BASE}/conversations/${conversationId}/audio${q ? `?${q}` : ''}`;
 }
 
-export async function registerTranscriptConversation(name) {
-  return request(`${BASE}/transcripts/${encodeURIComponent(name)}/register`, {
-    method: 'POST',
-  });
-}
-
 // ---- Anthology ----
 
 export async function fetchAnthologies() {
@@ -142,8 +136,8 @@ export function anthologyExportUrl(anthId, format = 'both', embed = false) {
   return `${BASE}/anthologies/${anthId}/export?${params.toString()}`;
 }
 
-export async function fetchConversations() {
-  return request(`${BASE}/conversations`);
+export async function fetchKaraokeManifest(anthId) {
+  return request(`${BASE}/anthologies/${anthId}/karaoke`);
 }
 
 export async function fetchTranscript(conversationId) {

@@ -99,6 +99,11 @@ class Clip(SQLModel, table=True):
     # JSON-encoded list of free-form tags.
     tags_json: str = "[]"
     curator_note: str = ""
+    # The exact text the curator selected at lift time — span text from the
+    # auto-highlighter, or full snippet text from the corpus heatmap. This is
+    # what the anthology should display, instead of recomputing from the
+    # clip's [start, end] range (which could include surrounding snippet text).
+    clip_text: str = ""
     # "manual" | "pass2_span" | "query_match"
     source: str = "manual"
     source_ref: Optional[str] = None
@@ -128,7 +133,19 @@ def get_engine() -> Engine:
             connect_args={"check_same_thread": False},
         )
         SQLModel.metadata.create_all(_engine)
+        _migrate(_engine)
     return _engine
+
+
+def _migrate(engine: Engine) -> None:
+    """Apply lightweight ALTER TABLE migrations for columns added after
+    the initial schema. SQLModel's create_all only creates missing tables,
+    so new columns on existing tables need to be added explicitly."""
+    with engine.connect() as conn:
+        cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(clip)").fetchall()}
+        if "clip_text" not in cols:
+            conn.exec_driver_sql("ALTER TABLE clip ADD COLUMN clip_text VARCHAR DEFAULT ''")
+            conn.commit()
 
 
 def get_session() -> Iterator[Session]:

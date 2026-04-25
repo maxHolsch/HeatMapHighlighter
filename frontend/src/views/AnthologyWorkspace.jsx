@@ -1,11 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Btn, Badge, Burst, Card, Display, Em, Eyebrow, GShape, Icon, Select,
+  Btn, Badge, Burst, Card, Display, Em, Eyebrow, GShape, Icon, Modal, Select, TextInput,
 } from '../components/primitives';
+import KaraokePreview from '../components/KaraokePreview';
 import {
   fetchAnthologies, fetchAnthology, updateAnthology, createAnthology,
   upsertSection, deleteSection,
-  addClip, updateClip, deleteClip,
+  updateClip, deleteClip,
   fetchCorpora, fetchCorpusSnippets,
   audioUrl, anthologyExportUrl,
 } from '../api';
@@ -29,7 +30,8 @@ export default function AnthologyWorkspace() {
   const [anth, setAnth] = useState(null);
   const [convMap, setConvMap] = useState({});
   const [error, setError] = useState(null);
-  const [creating, setCreating] = useState(false);
+  const [showNew, setShowNew] = useState(false);
+  const [showKaraoke, setShowKaraoke] = useState(false);
 
   useEffect(() => {
     fetchAnthologies().then((l) => {
@@ -104,8 +106,21 @@ export default function AnthologyWorkspace() {
       setAnth((a) => ({ ...a, sections: a.sections.filter((s) => s.id !== secId) }));
     } catch (e) { setError(e.message); }
   }
+  async function createNewAnthology(name, preface) {
+    try {
+      const r = await createAnthology(name || 'Untitled anthology', preface || '');
+      const fresh = await fetchAnthologies();
+      setList(fresh || []);
+      setActiveId(r.id);
+      setShowNew(false);
+    } catch (e) { setError(e.message); }
+  }
 
   function clipText(clip) {
+    // Prefer the exact text the curator selected at lift time. Falls back to
+    // joining any conversation snippets that overlap with the clip's audio
+    // range — needed for older clips saved before clip_text existed.
+    if (clip.clip_text) return clip.clip_text;
     const conv = convMap[clip.conversation_id];
     if (!conv) return '';
     const overlapping = conv.snippets.filter(
@@ -114,23 +129,23 @@ export default function AnthologyWorkspace() {
     return overlapping.map((s) => s.text).join(' ').trim();
   }
 
-  if (!list.length && !creating) {
+  if (!list.length) {
     return (
-      <div style={{ padding: '60px 36px', maxWidth: 720, margin: '0 auto', textAlign: 'center' }}>
-        <Eyebrow color="var(--vermillion)">No anthologies yet</Eyebrow>
-        <Display size={42} style={{ marginTop: 8 }}>Start an <Em>anthology</Em>.</Display>
-        <p style={{ marginTop: 14, color: 'var(--fg-muted)' }}>
-          Lift accepted highlights from the auto-highlighter, and they'll land here.
-        </p>
-        <div style={{ marginTop: 18 }}>
-          <Btn kind="ink" icon="plus" onClick={async () => {
-            setCreating(true);
-            const r = await fetchAnthologiesOrCreate(setError);
-            if (r) { setList([r]); setActiveId(r.id); }
-            setCreating(false);
-          }}>Create empty anthology</Btn>
+      <>
+        <div style={{ padding: '60px 36px', maxWidth: 720, margin: '0 auto', textAlign: 'center' }}>
+          <Eyebrow color="var(--vermillion)">No anthologies yet</Eyebrow>
+          <Display size={42} style={{ marginTop: 8 }}>Start an <Em>anthology</Em>.</Display>
+          <p style={{ marginTop: 14, color: 'var(--fg-muted)' }}>
+            Or lift things in from the auto-highlighter and the corpus heatmap, and they'll land here.
+          </p>
+          <div style={{ marginTop: 18 }}>
+            <Btn kind="ink" icon="plus" onClick={() => setShowNew(true)}>Create anthology</Btn>
+          </div>
         </div>
-      </div>
+        {showNew && (
+          <NewAnthologyModal onClose={() => setShowNew(false)} onCreate={createNewAnthology}/>
+        )}
+      </>
     );
   }
 
@@ -151,6 +166,7 @@ export default function AnthologyWorkspace() {
                 options={list.map((a) => ({ value: String(a.id), label: a.name }))}/>
             </div>
           )}
+          <Btn size="sm" kind="ghost" icon="plus" onClick={() => setShowNew(true)}>New anthology</Btn>
         </div>
         <input
           value={anth.name}
@@ -163,9 +179,16 @@ export default function AnthologyWorkspace() {
         <Burst size={48} color="var(--cadmium)" style={{ position: 'absolute', right: 0, top: 6 }}/>
 
         <div style={{ marginTop: 18, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          <Btn kind="ink" icon="play" onClick={() => setShowKaraoke(true)}>
+            Preview karaoke medley
+          </Btn>
           <a href={anthologyExportUrl(activeId, 'both', false)} download
             style={{ textDecoration: 'none' }}>
             <Btn kind="vermil" icon="download">Export dataset + karaoke</Btn>
+          </a>
+          <a href={anthologyExportUrl(activeId, 'dataset', false)} download
+            style={{ textDecoration: 'none' }}>
+            <Btn kind="ghost" icon="download">Dataset (JSON + CSV)</Btn>
           </a>
           <a href={anthologyExportUrl(activeId, 'karaoke', false)} download
             style={{ textDecoration: 'none' }}>
@@ -213,17 +236,56 @@ export default function AnthologyWorkspace() {
       <div style={{ marginTop: 18, textAlign: 'center' }}>
         <Btn kind="ink" icon="plus" onClick={addNewSection}>Add section</Btn>
       </div>
+
+      {showNew && (
+        <NewAnthologyModal onClose={() => setShowNew(false)} onCreate={createNewAnthology}/>
+      )}
+
+      {showKaraoke && (
+        <KaraokePreview anthId={activeId} onClose={() => setShowKaraoke(false)}/>
+      )}
     </div>
   );
 }
 
-async function fetchAnthologiesOrCreate(setError) {
-  try {
-    const list = await fetchAnthologies();
-    if (list && list.length) return list[0];
-    const r = await createAnthology('Untitled anthology', '');
-    return { id: r.id, name: 'Untitled anthology' };
-  } catch (e) { setError(e.message); return null; }
+function NewAnthologyModal({ onClose, onCreate }) {
+  const [name, setName] = useState('Untitled anthology');
+  const [preface, setPreface] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  async function submit() {
+    setBusy(true);
+    try {
+      await onCreate(name, preface);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal onClose={onClose} maxWidth={520}>
+      <Eyebrow color="var(--cadmium)">New anthology</Eyebrow>
+      <Display size={30} style={{ marginTop: 6 }}>Start a <Em>fresh book</Em>.</Display>
+      <div style={{ marginTop: 18 }}>
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 700,
+            textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 6 }}>Name</div>
+          <TextInput value={name} onChange={setName}/>
+        </div>
+        <div>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 700,
+            textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 6 }}>Preface (optional)</div>
+          <TextInput value={preface} onChange={setPreface} multiline rows={3}/>
+        </div>
+      </div>
+      <div style={{ display: 'flex', gap: 10, marginTop: 22, justifyContent: 'flex-end' }}>
+        <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
+        <Btn kind="vermil" icon="plus" onClick={submit} disabled={busy}>
+          {busy ? 'Creating…' : 'Create anthology'}
+        </Btn>
+      </div>
+    </Modal>
+  );
 }
 
 function Section({ sec, si, convMap, clipText, onChange, onClipChange, onClipDelete, onSectionDelete }) {
