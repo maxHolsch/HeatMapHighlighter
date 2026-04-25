@@ -1,0 +1,198 @@
+/* UI sans + mono — Google Fonts (must precede @font-face per CSS spec) */
+@import url('https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;700;800;900&family=JetBrains+Mono:wght@400;700&display=swap');
+
+/* =========================================================
+   GRAINY MAXIMALISM — colors & type tokens
+   Hot, saturated palette on plum or warm-paper grounds.
+   ========================================================= */
+
+/* Display: Fredericka the Great — ornamental hand-drawn */
+@font-face {
+  font-family: 'Fredericka the Great';
+  src: url('../fonts/FrederickatheGreat-Regular.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  /* ============== CORE PALETTE ============== */
+  /* Grounds — no purple */
+  --plum:           #1A120B;   /* was plum; now warm ink-brown for dark ground */
+  --plum-deep:      #0E0906;   /* darker shadow of dark ground */
+  --plum-purple:    #2A1E3D;   /* darker purple ground (sidebar/dark sections) */
+  --plum-purple-deep: #1B1230; /* deepest purple shadow */
+  --paper:          #F5EFE2;   /* warm off-white */
+  --paper-warm:     #EFE6D2;   /* slightly toastier paper */
+  --paper-ochre:    #E9D39A;   /* ochre paper — aged muted yellow */
+  --paper-sage:     #C8D3B8;   /* sage paper — muted green */
+  --paper-blush:    #E8C6B8;   /* blush paper — muted pink-terra */
+  --ink:            #120C06;   /* near-black, warm */
+
+  /* Hot accents — the loud chorus (no purples) */
+  --cobalt:         #2D4BE8;   /* electric cobalt */
+  --cobalt-deep:    #1A2FB8;
+  --cadmium:        #FFD11A;   /* cadmium yellow */
+  --cadmium-warm:   #F5B400;
+  --vermillion:     #F03A1B;   /* vermillion red */
+  --vermillion-soft:#FF6A3D;
+  --hotpink:        #F26FB2;   /* hot pink */
+  --hotpink-soft:   #F9A8C8;
+  /* violet/purple removed from palette — aliases kept to prevent breakage, mapped to vermillion */
+  --violet:         #F03A1B;
+  --violet-deep:    #B02A10;
+
+  /* Supporting */
+  --grass:          #2BB673;   /* occasional green note */
+  --bone:           #E8DFC8;   /* paper shadow */
+
+  /* ============== SEMANTIC ============== */
+  --bg:             var(--paper);
+  --bg-alt:         var(--paper-warm);
+  --bg-dark:        var(--plum);
+  --bg-dark-alt:    var(--plum-deep);
+
+  --fg:             var(--ink);
+  --fg-muted:       #4A3A52;       /* warm muted on paper */
+  --fg-on-dark:     var(--paper);
+  --fg-on-dark-muted:#C9BFA8;
+
+  --line:           #1A0A22;       /* hard black-violet hairline */
+  --line-soft:      #C9B8A0;       /* paper-tone divider */
+
+  --accent:         var(--cobalt);
+  --accent-warm:    var(--vermillion);
+  --accent-bright:  var(--cadmium);
+  --accent-soft:    var(--hotpink);
+
+  --success:        var(--grass);
+  --warning:        var(--cadmium-warm);
+  --danger:         var(--vermillion);
+  --info:           var(--cobalt);
+
+  /* ============== TYPE FAMILIES ============== */
+  --font-display:   'Fredericka the Great', 'Times New Roman', serif; /* hand-drawn ornamental display */
+  --font-poster:    'Fredericka the Great', 'Times New Roman', serif; /* poster tier — same family, used BIG + sparingly */
+  --font-sans:      'Archivo', 'Helvetica Neue', sans-serif;    /* condensed-friendly grotesk */
+  --font-mono:      'JetBrains Mono', ui-monospace, monospace;
+
+  /* ============== TYPE SCALE ============== */
+  --fs-display: clamp(56px, 9vw, 128px);
+  --fs-h1:      clamp(40px, 5.5vw, 72px);
+  --fs-h2:      clamp(30px, 3.5vw, 48px);
+  --fs-h3:      clamp(22px, 2.2vw, 30px);
+  --fs-h4:      18px;
+  --fs-body:    16px;
+  --fs-small:   14px;
+  --fs-micro:   12px;
+  --fs-eyebrow: 11px;
+
+  --lh-tight:   0.92;
+  --lh-snug:    1.05;
+  --lh-normal:  1.45;
+  --lh-loose:   1.6;
+
+  --tracking-display: -0.02em;
+  --tracking-tight:   -0.01em;
+  --tracking-normal:  0;
+  --tracking-eyebrow: 0.16em;
+
+  /* ============== SPACING ============== */
+  --sp-1:  4px;
+  --sp-2:  8px;
+  --sp-3:  12px;
+  --sp-4:  16px;
+  --sp-5:  24px;
+  --sp-6:  32px;
+  --sp-7:  48px;
+  --sp-8:  64px;
+  --sp-9:  96px;
+
+  /* ============== RADII ============== */
+  /* Shapes are confidently geometric — small radii, OR full lozenges */
+  --r-1:    2px;
+  --r-2:    4px;
+  --r-3:    8px;
+  --r-4:    14px;
+  --r-pill: 999px;
+  /* signature shapes */
+  --r-arch: 50% 50% 0 0 / 60% 60% 0 0;   /* arch / tombstone */
+  --r-leaf: 0 50% 0 50%;                  /* leaf */
+  --r-petal:50% 50% 50% 0;                /* petal */
+
+  /* ============== SHADOWS ============== */
+  /* Soft elevation is rare; instead, hard-offset blocks (riso registration). */
+  --sh-soft:   0 6px 20px rgba(26,10,34,.18);
+  --sh-print:  4px 4px 0 0 var(--ink);
+  --sh-print-cobalt:  6px 6px 0 0 var(--cobalt);
+  --sh-print-vermil:  6px 6px 0 0 var(--vermillion);
+  --inset-line: inset 0 0 0 2px var(--ink);
+
+  /* ============== MOTION ============== */
+  --ease-snap:   cubic-bezier(.2, .9, .2, 1);
+  --ease-bouncy: cubic-bezier(.34, 1.56, .64, 1);
+  --dur-fast:   140ms;
+  --dur-med:    280ms;
+  --dur-slow:   520ms;
+}
+
+/* =========================================================
+   BASE ELEMENTS
+   ========================================================= */
+
+html, body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: var(--fs-body);
+  line-height: var(--lh-normal);
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-display);
+  font-weight: 800;
+  line-height: var(--lh-tight);
+  letter-spacing: var(--tracking-display);
+  margin: 0;
+}
+h1 { font-size: var(--fs-h1); }
+h2 { font-size: var(--fs-h2); }
+h3 { font-size: var(--fs-h3); font-weight: 700; }
+h4 { font-size: var(--fs-h4); font-family: var(--font-sans); font-weight: 700; letter-spacing: var(--tracking-tight); }
+
+p { margin: 0 0 var(--sp-4); max-width: 64ch; }
+
+code, pre, kbd { font-family: var(--font-mono); font-size: 0.92em; }
+
+a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+}
+a:hover { color: var(--vermillion); }
+
+/* eyebrow / kicker */
+.eyebrow {
+  font-family: var(--font-sans);
+  font-weight: 700;
+  font-size: var(--fs-eyebrow);
+  letter-spacing: var(--tracking-eyebrow);
+  text-transform: uppercase;
+}
+
+/* display */
+.display {
+  font-family: var(--font-display);
+  font-weight: 900;
+  font-size: var(--fs-display);
+  line-height: var(--lh-tight);
+  letter-spacing: var(--tracking-display);
+}
+
+/* small caps utility */
+.smallcaps {
+  font-variant-caps: all-small-caps;
+  letter-spacing: 0.06em;
+}

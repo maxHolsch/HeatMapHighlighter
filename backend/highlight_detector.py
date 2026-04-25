@@ -53,6 +53,7 @@ def call_llm(
         ),
         input_schema=SCORES_TOOL_SCHEMA,
         max_tokens=max_tokens,
+        usage_label="pass1_snippet_scoring",
     )
 
 

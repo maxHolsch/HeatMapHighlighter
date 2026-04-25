@@ -1,0 +1,22 @@
+html, body { margin: 0; padding: 0; background: var(--paper); }
+body { overflow-x: hidden; }
+#root { min-height: 100vh; }
+
+.page-grain { position: relative; }
+.page-grain::after {
+  content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 200;
+  background-image: var(--grain-svg);
+  background-size: 380px 380px; mix-blend-mode: multiply; opacity: 0.06;
+}
+
+@keyframes hm-pulse {
+  0%, 100% { transform: translateX(-100%); }
+  50%      { transform: translateX(0%); }
+}
+
+.btn-snap:not(:disabled):hover { transform: translate(-1px, -1px); box-shadow: 5px 5px 0 0 var(--ink) !important; }
+.btn-snap:not(:disabled):active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 0 var(--ink) !important; }
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: var(--paper-warm); }
+::-webkit-scrollbar-thumb { background: var(--ink); border: 2px solid var(--paper-warm); border-radius: 999px; }

@@ -155,6 +155,7 @@ def call_llm_spans(
         ),
         input_schema=SPAN_TOOL_SCHEMA,
         max_tokens=max_tokens,
+        usage_label="pass2_span_extraction",
     )
 
 

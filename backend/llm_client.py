@@ -15,7 +15,35 @@ from typing import Any, Dict, List, Optional
 
 from anthropic import Anthropic
 
+from pricing import record_usage
+
 _client: Optional[Anthropic] = None
+
+
+# Models that have deprecated the `temperature` parameter. Kept as a set
+# (not a regex) so it's obvious which families are affected — current Opus
+# 4.x series rejects temperature with a 400.
+_NO_TEMPERATURE_MODELS = {
+    "claude-opus-4-7",
+    "claude-opus-4-6",
+    "claude-opus-4-5",
+}
+
+
+def _supports_temperature(model: str) -> bool:
+    return model not in _NO_TEMPERATURE_MODELS
+
+
+def _usage_dict(resp) -> Dict[str, int]:
+    u = getattr(resp, "usage", None)
+    if u is None:
+        return {}
+    return {
+        "input_tokens": getattr(u, "input_tokens", 0) or 0,
+        "output_tokens": getattr(u, "output_tokens", 0) or 0,
+        "cache_read_input_tokens": getattr(u, "cache_read_input_tokens", 0) or 0,
+        "cache_creation_input_tokens": getattr(u, "cache_creation_input_tokens", 0) or 0,
+    }
 
 
 def get_client() -> Anthropic:
@@ -40,6 +68,7 @@ def run_structured(
     max_tokens: int = 8192,
     temperature: float = 0.0,
     extra_messages: Optional[List[Dict[str, Any]]] = None,
+    usage_label: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Send a single-shot prompt and force the model to return via a tool call
@@ -55,7 +84,6 @@ def run_structured(
     kwargs: Dict[str, Any] = {
         "model": model,
         "max_tokens": max_tokens,
-        "temperature": temperature,
         "messages": messages,
         "tools": [
             {
@@ -66,10 +94,13 @@ def run_structured(
         ],
         "tool_choice": {"type": "tool", "name": tool_name},
     }
+    if _supports_temperature(model):
+        kwargs["temperature"] = temperature
     if system:
         kwargs["system"] = system
 
     resp = client.messages.create(**kwargs)
+    record_usage(label=usage_label or tool_name, model=model, usage=_usage_dict(resp))
 
     for block in resp.content:
         if getattr(block, "type", None) == "tool_use" and block.name == tool_name:
@@ -88,18 +119,21 @@ def run_text(
     system: Optional[str] = None,
     max_tokens: int = 1024,
     temperature: float = 0.2,
+    usage_label: str = "text",
 ) -> str:
     """Single-shot plain-text response (for short free-form explanations)."""
     client = get_client()
     kwargs: Dict[str, Any] = {
         "model": model,
         "max_tokens": max_tokens,
-        "temperature": temperature,
         "messages": [{"role": "user", "content": prompt}],
     }
+    if _supports_temperature(model):
+        kwargs["temperature"] = temperature
     if system:
         kwargs["system"] = system
     resp = client.messages.create(**kwargs)
+    record_usage(label=usage_label, model=model, usage=_usage_dict(resp))
     parts: List[str] = []
     for block in resp.content:
         if getattr(block, "type", None) == "text":

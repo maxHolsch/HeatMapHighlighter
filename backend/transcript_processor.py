@@ -9,9 +9,12 @@ original (un-merged) snippet list.
 
 import json
 import re
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
+
+from sqlmodel import select
 
 from config import RAW_TRANSCRIPTS_DIR
+from db import Conversation, Snippet, session
 
 
 # ---------------------------------------------------------------------------
@@ -152,32 +155,97 @@ def merge_snippets_with_mapping(
     return merged, mapping
 
 
+def _load_from_db(conversation_id: str) -> Tuple[List[Dict], Optional[Dict]]:
+    """Pull snippets for a conversation (looked up by title) from the corpus DB.
+
+    Returns (snippets, meta) — meta carries db_id/audio info for the FE.
+    """
+    with session() as s:
+        conv = s.exec(
+            select(Conversation).where(Conversation.title == conversation_id)
+        ).first()
+        if conv is None:
+            return [], None
+        rows = s.exec(
+            select(Snippet)
+            .where(Snippet.conversation_id == conv.id)
+            .order_by(Snippet.idx)
+        ).all()
+        snippets = [
+            {
+                "audio_start_offset": r.start_sec,
+                "audio_end_offset": r.end_sec,
+                "speaker_id": r.speaker_id,
+                "speaker_name": r.speaker_name,
+                "transcript": (r.text or "").strip(),
+            }
+            for r in rows
+        ]
+        meta = {
+            "db_id": conv.id,
+            "has_audio": bool(conv.audio_path),
+            "duration_sec": conv.duration_sec,
+        }
+        return snippets, meta
+
+
 def load_conversation(conversation_id: str) -> Dict:
     """
-    Load a raw transcript, clean it, merge short snippets, and return
-    everything the frontend and LLM pipeline need.
+    Load a transcript (preferring the corpus DB, falling back to raw Cortico
+    JSON), clean it, merge short snippets, and return everything the frontend
+    and LLM pipeline need.
     """
-    raw_path = RAW_TRANSCRIPTS_DIR / f"{conversation_id}.json"
-    if not raw_path.exists():
-        raise FileNotFoundError(f"Raw transcript not found: {raw_path}")
+    original_snippets, db_meta = _load_from_db(conversation_id)
 
-    with raw_path.open("r", encoding="utf-8") as f:
-        raw_json = json.load(f)
+    if not original_snippets:
+        raw_path = RAW_TRANSCRIPTS_DIR / f"{conversation_id}.json"
+        if not raw_path.exists():
+            raise FileNotFoundError(
+                f"Conversation {conversation_id!r} not found in corpus DB or "
+                f"raw transcripts dir ({RAW_TRANSCRIPTS_DIR})."
+            )
+        with raw_path.open("r", encoding="utf-8") as f:
+            raw_json = json.load(f)
+        original_snippets = clean_raw_transcript(raw_json)
 
-    original_snippets = clean_raw_transcript(raw_json)
     merged_snippets, merge_mapping = merge_snippets_with_mapping(
         [dict(s) for s in original_snippets]  # copy so originals stay clean
     )
 
-    return {
+    payload: Dict = {
         "original_snippets": original_snippets,
         "merged_snippets": merged_snippets,
         "merge_mapping": {str(k): v for k, v in merge_mapping.items()},
     }
+    if db_meta is not None:
+        payload.update(db_meta)
+    return payload
 
 
 def list_conversations() -> List[str]:
-    """Return sorted list of conversation IDs available in the raw transcripts dir."""
-    return sorted(
-        p.stem for p in RAW_TRANSCRIPTS_DIR.glob("conversation-*.json")
-    )
+    """Return sorted list of conversation IDs.
+
+    Sources, in order: titles from the corpus DB (audio-ingested episodes),
+    then any raw Cortico JSON stems on disk. Deduplicated.
+    """
+    ids: List[str] = []
+    seen = set()
+
+    try:
+        with session() as s:
+            titles = s.exec(select(Conversation.title)).all()
+        for t in titles:
+            if t and t not in seen:
+                seen.add(t)
+                ids.append(t)
+    except Exception:
+        # DB not yet initialised — fall back to filesystem only.
+        pass
+
+    if RAW_TRANSCRIPTS_DIR.exists():
+        for p in RAW_TRANSCRIPTS_DIR.glob("conversation-*.json"):
+            if p.stem not in seen:
+                seen.add(p.stem)
+                ids.append(p.stem)
+
+    return sorted(ids)

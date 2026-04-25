@@ -223,6 +223,21 @@ export async function fetchConfig() {
   return request(`${BASE}/config`);
 }
 
+export async function fetchPricing() {
+  return request(`${BASE}/pricing`);
+}
+
+export async function estimateRunCost(conversationId, components) {
+  return request(
+    `${BASE}/conversations/${conversationId}/cost-estimate`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(components),
+    }
+  );
+}
+
 export async function fetchPromptComponents() {
   return request(`${BASE}/prompt-components`);
 }

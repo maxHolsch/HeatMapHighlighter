@@ -8,7 +8,10 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # uvicorn[standard] so it's already in our venv.
 try:
     from dotenv import load_dotenv
-    load_dotenv(BASE_DIR / ".env")
+    # override=True so a stale/placeholder value already in the shell
+    # (e.g. a leftover sk-ant-... from .env.example) cannot mask the real
+    # key written to .env. The file on disk is the source of truth.
+    load_dotenv(BASE_DIR / ".env", override=True)
 except ImportError:
     pass
 
