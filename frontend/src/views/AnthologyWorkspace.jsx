@@ -178,26 +178,43 @@ export default function AnthologyWorkspace() {
           }}/>
         <Burst size={48} color="var(--cadmium)" style={{ position: 'absolute', right: 0, top: 6 }}/>
 
-        <div style={{ marginTop: 18, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+        <div style={{ marginTop: 20, display: 'flex', gap: 18, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+          {/* Primary action — preview the medley */}
           <Btn kind="ink" icon="play" onClick={() => setShowKaraoke(true)}>
             Preview karaoke medley
           </Btn>
-          <a href={anthologyExportUrl(activeId, 'both', false)} download
-            style={{ textDecoration: 'none' }}>
-            <Btn kind="vermil" icon="download">Export dataset + karaoke</Btn>
-          </a>
-          <a href={anthologyExportUrl(activeId, 'dataset', false)} download
-            style={{ textDecoration: 'none' }}>
-            <Btn kind="ghost" icon="download">Dataset (JSON + CSV)</Btn>
-          </a>
-          <a href={anthologyExportUrl(activeId, 'karaoke', false)} download
-            style={{ textDecoration: 'none' }}>
-            <Btn kind="ghost" icon="download">Karaoke only</Btn>
-          </a>
-          <a href={anthologyExportUrl(activeId, 'karaoke', true)} download
-            style={{ textDecoration: 'none' }}>
-            <Btn kind="ghost" icon="download">Karaoke (audio embedded)</Btn>
-          </a>
+
+          {/* Export cluster — featured "everything" button + a tidy 2x2 grid of variants */}
+          <div style={{
+            display: 'grid', gridTemplateColumns: 'auto 1fr', gap: 14,
+            padding: 14, border: '2px dashed var(--ink)', borderRadius: 12,
+            background: 'var(--paper-warm)', alignItems: 'stretch',
+          }}>
+            <a href={anthologyExportUrl(activeId, 'both', false)} download
+              style={{ textDecoration: 'none', alignSelf: 'center' }}>
+              <Btn kind="vermil" icon="download">Export dataset + karaoke</Btn>
+            </a>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, paddingLeft: 14, borderLeft: '1.5px dashed var(--line-soft)' }}>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 700,
+                letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--fg-muted)', marginBottom: 2 }}>
+                or grab just one
+              </span>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, max-content)', gap: 8 }}>
+                <a href={anthologyExportUrl(activeId, 'dataset', false)} download
+                  style={{ textDecoration: 'none' }}>
+                  <Btn kind="ghost" size="sm" icon="download">Dataset (JSON + CSV)</Btn>
+                </a>
+                <a href={anthologyExportUrl(activeId, 'karaoke', false)} download
+                  style={{ textDecoration: 'none' }}>
+                  <Btn kind="ghost" size="sm" icon="download">Karaoke only</Btn>
+                </a>
+                <a href={anthologyExportUrl(activeId, 'karaoke', true)} download
+                  style={{ textDecoration: 'none', gridColumn: '1 / span 2' }}>
+                  <Btn kind="ghost" size="sm" icon="download">Karaoke (audio embedded)</Btn>
+                </a>
+              </div>
+            </div>
+          </div>
         </div>
       </header>
 

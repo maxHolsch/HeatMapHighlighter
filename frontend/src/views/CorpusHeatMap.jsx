@@ -199,7 +199,6 @@ export default function CorpusHeatmap() {
   return (
     <div style={{ padding: '28px 36px 60px', maxWidth: 1400, margin: '0 auto' }}>
       <header style={{ position: 'relative', marginBottom: 22 }}>
-        <Eyebrow color="var(--vermillion)">Corpus heatmap — every conversation, all at once</Eyebrow>
         <Display size={64} style={{ marginTop: 8, maxWidth: 980 }}>
           The whole <Em>wall</Em>, lit up.
         </Display>
@@ -492,15 +491,8 @@ function DetailPanel({ snippet, score, decomp, onClose, onLift, query }) {
         </div>
       </div>
       <div style={{ padding: 18 }}>
-        <p style={{ fontFamily: 'var(--font-display)', fontSize: 22, lineHeight: 1.2, margin: 0, color: 'var(--ink)' }}>
-          <DrawerSnippetText text={text} editedSpan={spanRange}/>
-        </p>
-        <SpanRangeSlider
-          textLen={text.length}
-          charStart={spanRange.char_start}
-          charEnd={spanRange.char_end}
-          onChange={(cs, ce) => setSpanRange({ char_start: cs, char_end: ce })}
-        />
+        <DrawerSnippetText text={text} editedSpan={spanRange}
+          onChange={(cs, ce) => setSpanRange({ char_start: cs, char_end: ce })}/>
         {score !== undefined && (
           <div style={{ marginTop: 16, padding: 12, background: 'var(--paper-warm)',
             border: '2px solid var(--ink)', borderRadius: 6 }}>
@@ -539,100 +531,121 @@ function DetailPanel({ snippet, score, decomp, onClose, onLift, query }) {
   );
 }
 
-function DrawerSnippetText({ text, editedSpan }) {
-  if (!editedSpan) return <span>“{text}”</span>;
+// Snippet text with the proposed span rendered as an on-paper highlight.
+// Drag the red handles directly on the text to resize the span — replaces
+// the old bottom slider so curators stay anchored in the words themselves.
+function DrawerSnippetText({ text, editedSpan, onChange }) {
+  const containerRef = useRef(null);
+  const [hoverIdx, setHoverIdx] = useState(null);
+
+  if (!editedSpan) {
+    return <p style={{ fontFamily: 'var(--font-display)', fontSize: 22, lineHeight: 1.2, margin: 0, color: 'var(--ink)' }}>“{text}”</p>;
+  }
   const cs = Math.max(0, Math.min(text.length, editedSpan.char_start));
   const ce = Math.max(cs, Math.min(text.length, editedSpan.char_end));
-  const before = text.slice(0, cs);
-  const inner = text.slice(cs, ce);
-  const after = text.slice(ce);
-  return (
-    <>
-      {before}
-      <mark style={{ background: 'var(--cadmium)', padding: '1px 4px',
-        border: '2px solid var(--ink)', borderRadius: 4, boxShadow: '2px 2px 0 0 var(--ink)',
-        color: 'var(--ink)' }}>
-        {inner || ' '}
-      </mark>
-      {after}
-    </>
-  );
-}
 
-function SpanRangeSlider({ textLen, charStart, charEnd, onChange }) {
-  const trackRef = useRef(null);
-  const valuesRef = useRef({ charStart, charEnd, textLen });
-  valuesRef.current = { charStart, charEnd, textLen };
-  const [active, setActive] = useState(null);
+  function nearestCharIndex(clientX, clientY) {
+    const root = containerRef.current;
+    if (!root) return null;
+    const charSpans = root.querySelectorAll('[data-char-idx]');
+    let best = -1;
+    let bestDist = Infinity;
+    let bestSide = 0;
+    for (const node of charSpans) {
+      const r = node.getBoundingClientRect();
+      if (clientY < r.top - 4 || clientY > r.bottom + 4) continue;
+      const cx = (r.left + r.right) / 2;
+      const d = Math.abs(clientX - cx);
+      if (d < bestDist) {
+        bestDist = d;
+        best = parseInt(node.dataset.charIdx, 10);
+        bestSide = clientX < cx ? 0 : 1;
+      }
+    }
+    if (best === -1) return null;
+    return Math.max(0, Math.min(text.length, best + bestSide));
+  }
 
   function startDrag(handle, e) {
+    if (!onChange) return;
     e.preventDefault();
     e.stopPropagation();
-    setActive(handle);
-
     function move(ev) {
-      const r = trackRef.current?.getBoundingClientRect();
-      if (!r) return;
-      const t = Math.max(0, Math.min(1, (ev.clientX - r.left) / Math.max(1, r.width)));
-      const cur = valuesRef.current;
-      const c = Math.round(t * cur.textLen);
-      if (handle === 'start') {
-        onChange(Math.max(0, Math.min(c, cur.charEnd - 1)), cur.charEnd);
-      } else {
-        onChange(cur.charStart, Math.max(cur.charStart + 1, Math.min(cur.textLen, c)));
-      }
+      const idx = nearestCharIndex(ev.clientX, ev.clientY);
+      if (idx == null) return;
+      if (handle === 'start') onChange(Math.max(0, Math.min(idx, ce - 1)), ce);
+      else onChange(cs, Math.max(cs + 1, Math.min(text.length, idx)));
     }
     function up() {
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
-      setActive(null);
     }
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
   }
 
-  const len = Math.max(1, textLen);
-  const leftPct = (charStart / len) * 100;
-  const rightPct = (charEnd / len) * 100;
+  const handleStyle = {
+    display: 'inline-block', width: 10, height: 22, verticalAlign: 'middle',
+    background: 'var(--vermillion)', border: '2px solid var(--ink)',
+    borderRadius: 3, boxShadow: '2px 2px 0 0 var(--ink)',
+    cursor: onChange ? 'ew-resize' : 'default', margin: '0 1px',
+    touchAction: 'none', position: 'relative', top: -1,
+  };
 
-  return (
-    <div style={{ marginTop: 14 }}>
-      <div ref={trackRef}
+  const before = [], inner = [], after = [];
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    const node = (
+      <span key={i} data-char-idx={i}
+        onMouseEnter={() => setHoverIdx(i)}
+        onMouseLeave={() => setHoverIdx((v) => (v === i ? null : v))}
+        onClick={(e) => {
+          if (!onChange) return;
+          const r = e.currentTarget.getBoundingClientRect();
+          const idx = i + (e.clientX > r.left + r.width / 2 ? 1 : 0);
+          if (idx <= cs) onChange(Math.max(0, idx), ce);
+          else if (idx >= ce) onChange(cs, Math.min(text.length, idx));
+        }}
         style={{
-          position: 'relative', height: 26, padding: '11px 0',
-          touchAction: 'none', userSelect: 'none',
-        }}>
-        <div style={{ position: 'absolute', top: 12, left: 0, right: 0, height: 3,
-          background: 'var(--bone)', border: '1.5px solid var(--ink)', borderRadius: 2 }}/>
-        <div style={{
-          position: 'absolute', top: 11, left: `${leftPct}%`,
-          width: `${Math.max(0, rightPct - leftPct)}%`, height: 5,
-          background: 'var(--cadmium)', border: '1.5px solid var(--ink)', borderRadius: 2,
-        }}/>
-        <SliderHandle pct={leftPct} active={active === 'start'} onPointerDown={(e) => startDrag('start', e)}/>
-        <SliderHandle pct={rightPct} active={active === 'end'} onPointerDown={(e) => startDrag('end', e)}/>
-      </div>
-      <div style={{ marginTop: 4, display: 'flex', justifyContent: 'space-between',
-        fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--fg-muted)' }}>
-        <span>start {charStart}</span>
-        <span>{charEnd - charStart} chars selected</span>
-        <span>end {charEnd}</span>
-      </div>
-    </div>
-  );
-}
+          background: hoverIdx === i && (i < cs || i >= ce) && onChange
+            ? 'rgba(255,209,26,0.35)' : 'transparent',
+        }}
+      >{ch}</span>
+    );
+    if (i < cs) before.push(node);
+    else if (i < ce) inner.push(node);
+    else after.push(node);
+  }
 
-function SliderHandle({ pct, active, onPointerDown }) {
   return (
-    <div onPointerDown={onPointerDown}
-      style={{
-        position: 'absolute', top: 5, left: `${pct}%`,
-        width: 18, height: 18, marginLeft: -9,
-        borderRadius: '50%', background: active ? 'var(--vermillion)' : 'var(--paper)',
-        border: '2px solid var(--ink)',
-        boxShadow: active ? '3px 3px 0 0 var(--ink)' : '2px 2px 0 0 var(--ink)',
-        cursor: 'ew-resize', touchAction: 'none', zIndex: 2,
-      }}/>
+    <div ref={containerRef}
+      style={{ fontFamily: 'var(--font-display)', fontSize: 22, lineHeight: 1.4,
+        margin: 0, color: 'var(--ink)', userSelect: 'none' }}>
+      “
+      {before}
+      {onChange && (
+        <span role="slider" aria-label="Drag to set span start"
+          onPointerDown={(e) => startDrag('start', e)} style={handleStyle}/>
+      )}
+      <mark style={{ background: 'var(--cadmium)', padding: '0 2px',
+        borderTop: '2px solid var(--ink)', borderBottom: '2px solid var(--ink)',
+        color: 'var(--ink)' }}>
+        {inner.length ? inner : <span style={{ display: 'inline-block', width: 6 }}> </span>}
+      </mark>
+      {onChange && (
+        <span role="slider" aria-label="Drag to set span end"
+          onPointerDown={(e) => startDrag('end', e)} style={handleStyle}/>
+      )}
+      {after}
+      ”
+      {onChange && (
+        <div style={{ marginTop: 10, fontFamily: 'var(--font-mono)', fontSize: 10.5,
+          color: 'var(--fg-muted)', display: 'flex', justifyContent: 'space-between' }}>
+          <span>drag <b style={{ color: 'var(--vermillion)' }}>red handles</b> on the text</span>
+          <span>{ce - cs} chars</span>
+        </div>
+      )}
+    </div>
   );
 }
 

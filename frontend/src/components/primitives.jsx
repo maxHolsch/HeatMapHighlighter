@@ -66,22 +66,58 @@ export function Scribble({ width = 120, color = 'var(--vermillion)', strokeWidth
   );
 }
 
-function scribblePath(seed, w, h) {
+// Five hand-drawn pill variants. Each is a closed Catmull-Rom path around a
+// stretched ellipse with mild, calligraphy-like deviations. Variants differ in
+// segment count, jitter amplitude, asymmetry, and corner softness so the same
+// component picks a different shape per seed without ever looking jagged.
+const SCRIBBLE_VARIANTS = [
+  // 0 — soft pill, almost smooth
+  { N: 22, jitter: 0.022, sway: 0.012, twist: 0.04, capRatio: 0.55, roundness: 0.62 },
+  // 1 — slightly squat, gentle bulge on top
+  { N: 24, jitter: 0.030, sway: 0.020, twist: 0.06, capRatio: 0.50, roundness: 0.58 },
+  // 2 — long-limbed pill with subtle wave
+  { N: 26, jitter: 0.028, sway: 0.024, twist: 0.05, capRatio: 0.60, roundness: 0.66 },
+  // 3 — slightly diamond-asymmetric, like a marker stroke
+  { N: 24, jitter: 0.034, sway: 0.018, twist: 0.09, capRatio: 0.48, roundness: 0.55 },
+  // 4 — relaxed, cloud-like
+  { N: 28, jitter: 0.026, sway: 0.030, twist: 0.05, capRatio: 0.62, roundness: 0.70 },
+];
+
+function variantForSeed(seed) {
+  let s = 0;
+  for (let i = 0; i < seed.length; i++) s = (s * 31 + seed.charCodeAt(i)) | 0;
+  const idx = Math.abs(s) % SCRIBBLE_VARIANTS.length;
+  return idx;
+}
+
+function scribblePath(seed, w, h, variantIdx) {
   let s = 0; for (let i = 0; i < seed.length; i++) s = (s * 31 + seed.charCodeAt(i)) | 0;
   const rand = () => { s = (s * 1103515245 + 12345) & 0x7fffffff; return (s % 1000) / 1000; };
+
+  const v = SCRIBBLE_VARIANTS[variantIdx ?? variantForSeed(seed)];
+  const { N, jitter, sway, twist, capRatio, roundness } = v;
+
   const r = h / 2;
-  const N = 16;
+  const flatW = Math.max(0, w - h * (1 + (1 - roundness)));
+  const phase = rand() * Math.PI * 2;
   const pts = [];
   for (let i = 0; i < N; i++) {
     const t = (i / N) * Math.PI * 2;
     const cx = w / 2, cy = h / 2;
     const sx = Math.cos(t), sy = Math.sin(t);
-    const flatW = w - h;
-    const px = cx + (sx >= 0 ? flatW/2 : -flatW/2) + r * sx * 0.55;
-    const py = cy + r * sy;
-    const capFactor = Math.abs(sx) > 0.7 ? 0.45 : 1.0;
-    const j = (rand() - 0.5) * (h * 0.06) * capFactor;
-    pts.push([px + sx * j, py + sy * j]);
+    // Cap factor — softer wobble on the rounded ends so they read as "drawn caps".
+    const capFactor = Math.abs(sx) > 0.7 ? capRatio : 1.0;
+    // Smooth low-frequency sway across the perimeter — gives the line a relaxed,
+    // hand-pulled feel without micro jaggies.
+    const swayY = Math.sin(t * 2 + phase) * (h * sway);
+    const swayX = Math.cos(t * 3 + phase) * (w * sway * 0.35);
+    const px = cx + (sx >= 0 ? flatW / 2 : -flatW / 2) + r * sx * 0.55 + swayX * capFactor;
+    const py = cy + r * sy + swayY * capFactor;
+    // Per-point micro jitter, intentionally small.
+    const j = (rand() - 0.5) * (h * jitter) * capFactor;
+    // Slight tangential twist that gives a subtle marker-pressure look.
+    const tw = (rand() - 0.5) * (h * twist) * capFactor;
+    pts.push([px + sx * j - sy * tw, py + sy * j + sx * tw]);
   }
   const cr = (p0, p1, p2, p3) => {
     const c1x = p1[0] + (p2[0] - p0[0]) / 6;
@@ -102,9 +138,10 @@ function scribblePath(seed, w, h) {
   return d;
 }
 
-export function ScribbleBlob({ seed, fill, stroke, strokeWidth = 2, style }) {
+export function ScribbleBlob({ seed, fill, stroke, strokeWidth = 2, style, variant }) {
   const W = 200, H = 52;
-  const d = scribblePath(seed, W, H);
+  const v = variant != null ? (variant % SCRIBBLE_VARIANTS.length) : variantForSeed(seed);
+  const d = scribblePath(seed, W, H, v);
   return (
     <svg viewBox={`-3 -3 ${W+6} ${H+6}`} preserveAspectRatio="none"
       style={{ display: 'block', overflow: 'visible', ...style }}>
@@ -284,8 +321,8 @@ export function HandFrame({ overshoot = 7, stroke = 'var(--ink)', strokeWidth = 
                     pointerEvents: 'none', overflow: 'visible', zIndex: 1 }}>
         <defs>
           <filter id={`rough-${fSeed}`} x="-10%" y="-30%" width="120%" height="160%">
-            <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" seed={fSeed.length || 3}/>
-            <feDisplacementMap in="SourceGraphic" scale="1.4"/>
+            <feTurbulence type="fractalNoise" baseFrequency="0.6" numOctaves="2" seed={fSeed.length || 3}/>
+            <feDisplacementMap in="SourceGraphic" scale="0.9"/>
           </filter>
         </defs>
         <g stroke={stroke} strokeWidth={focus ? strokeWidth + 0.3 : strokeWidth} fill="none"
@@ -428,6 +465,116 @@ export function HandToggle({ value, onChange, label, color = 'var(--cobalt)' }) 
       </span>
       {label && <span>{label}</span>}
     </button>
+  );
+}
+
+// Hand-drawn round button (used for play/pause and other circular actions).
+// Renders a slightly wobbly disc + ink stroke so audio controls feel of-a-piece
+// with the rest of the marker-and-paper UI.
+export function HandCircleBtn({
+  onClick, ariaLabel, size = 38, fill = 'var(--ink)', fg = 'var(--paper)',
+  stroke = 'var(--ink)', strokeWidth = 1.8, seed = 'cb', children, disabled,
+}) {
+  const sSeed = String(seed).replace(/[^a-zA-Z0-9_-]/g, '') || 'cb';
+  const wobblePath = useMemo(() => {
+    let s = 0; for (let i = 0; i < sSeed.length; i++) s = (s * 31 + sSeed.charCodeAt(i)) | 0;
+    const rand = () => { s = (s * 1103515245 + 12345) & 0x7fffffff; return (s % 1000) / 1000 - 0.5; };
+    const cx = 50, cy = 50, r = 44, N = 28;
+    const pts = [];
+    const phase = (Math.abs(s) % 1000) / 1000 * Math.PI * 2;
+    for (let i = 0; i < N; i++) {
+      const t = (i / N) * Math.PI * 2;
+      const sway = Math.sin(t * 3 + phase) * 1.2 + rand() * 1.2;
+      const rr = r + sway;
+      pts.push([cx + Math.cos(t) * rr, cy + Math.sin(t) * rr]);
+    }
+    let d = `M${pts[0][0].toFixed(1)},${pts[0][1].toFixed(1)}`;
+    for (let i = 0; i < pts.length; i++) {
+      const p0 = pts[(i - 1 + pts.length) % pts.length];
+      const p1 = pts[i];
+      const p2 = pts[(i + 1) % pts.length];
+      const p3 = pts[(i + 2) % pts.length];
+      const c1x = p1[0] + (p2[0] - p0[0]) / 6;
+      const c1y = p1[1] + (p2[1] - p0[1]) / 6;
+      const c2x = p2[0] - (p3[0] - p1[0]) / 6;
+      const c2y = p2[1] - (p3[1] - p1[1]) / 6;
+      d += `C${c1x.toFixed(1)},${c1y.toFixed(1)} ${c2x.toFixed(1)},${c2y.toFixed(1)} ${p2[0].toFixed(1)},${p2[1].toFixed(1)}`;
+    }
+    d += 'Z';
+    return d;
+  }, [sSeed]);
+  const [hover, setHover] = useState(false);
+  const [active, setActive] = useState(false);
+  const lift = active ? 0 : (hover && !disabled ? 2 : 1);
+  return (
+    <button onClick={onClick} aria-label={ariaLabel} disabled={disabled}
+      onMouseEnter={() => setHover(true)} onMouseLeave={() => { setHover(false); setActive(false); }}
+      onMouseDown={() => setActive(true)} onMouseUp={() => setActive(false)}
+      style={{
+        width: size, height: size, padding: 0, background: 'transparent', border: 'none',
+        cursor: disabled ? 'not-allowed' : 'pointer', position: 'relative',
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+        opacity: disabled ? 0.5 : 1,
+        transform: active ? 'translate(1px,1px)' : 'none',
+        transition: 'transform 120ms var(--ease-snap)',
+      }}>
+      <svg width={size} height={size} viewBox="0 0 100 100"
+        style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        {/* drop shadow disc */}
+        <path d={wobblePath} fill={stroke} opacity="0.95"
+          transform={`translate(${lift + 1}, ${lift + 1.5})`}/>
+        <path d={wobblePath} fill={fill} stroke={stroke} strokeWidth={strokeWidth}
+          strokeLinejoin="round" strokeLinecap="round"/>
+      </svg>
+      <span style={{ position: 'relative', color: fg, display: 'inline-flex',
+        alignItems: 'center', justifyContent: 'center', lineHeight: 0 }}>
+        {children}
+      </span>
+    </button>
+  );
+}
+
+// A relaxed, hand-drawn audio progress track. Pure visual — value 0..1.
+export function HandProgressBar({ value, height = 10, fill = 'var(--cadmium)',
+  track = 'var(--bone)', stroke = 'var(--ink)', seed = 'pb', style }) {
+  const sSeed = String(seed).replace(/[^a-zA-Z0-9_-]/g, '') || 'pb';
+  const { topPath, botPath } = useMemo(() => {
+    let s = 0; for (let i = 0; i < sSeed.length; i++) s = (s * 31 + sSeed.charCodeAt(i)) | 0;
+    const rand = () => { s = (s * 1103515245 + 12345) & 0x7fffffff; return (s % 1000) / 1000 - 0.5; };
+    const W = 200, H = 12, N = 14;
+    const top = [];
+    const bot = [];
+    const phase = (Math.abs(s) % 1000) / 1000 * Math.PI * 2;
+    for (let i = 0; i <= N; i++) {
+      const x = (i / N) * W;
+      const j1 = Math.sin(i * 0.7 + phase) * 0.7 + rand() * 0.6;
+      const j2 = Math.sin(i * 0.9 + phase + 1) * 0.7 + rand() * 0.6;
+      top.push([x, 0 + j1]);
+      bot.push([x, H + j2]);
+    }
+    const toD = (pts) => pts.map((p, i) => (i === 0 ? 'M' : 'L') + ` ${p[0].toFixed(1)} ${p[1].toFixed(1)}`).join(' ');
+    return { topPath: toD(top), botPath: toD(bot) };
+  }, [sSeed]);
+  const v = Math.max(0, Math.min(1, value || 0));
+  return (
+    <div style={{ position: 'relative', flex: 1, height, ...style }}>
+      <svg viewBox="0 0 200 12" preserveAspectRatio="none"
+        style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', overflow: 'visible' }}>
+        <defs>
+          <clipPath id={`pbclip-${sSeed}`}>
+            <rect x="0" y="-2" width={200 * v} height="16"/>
+          </clipPath>
+        </defs>
+        <path d={topPath} stroke={stroke} strokeWidth="1.4" fill="none"
+          strokeLinecap="round" strokeLinejoin="round"/>
+        <path d={botPath} stroke={stroke} strokeWidth="1.4" fill="none"
+          strokeLinecap="round" strokeLinejoin="round"/>
+        <path d={`${topPath} L 200 12 L 0 12 Z`} fill={track}/>
+        <g clipPath={`url(#pbclip-${sSeed})`}>
+          <path d={`${topPath} L 200 12 L 0 12 Z`} fill={fill}/>
+        </g>
+      </svg>
+    </div>
   );
 }
 
