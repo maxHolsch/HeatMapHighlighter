@@ -60,8 +60,8 @@ export function audioUrl(conversationId, start, end) {
   return `${BASE}/conversations/${conversationId}/audio${q ? `?${q}` : ''}`;
 }
 
-export async function registerCorticoConversation(name) {
-  return request(`${BASE}/cortico/${encodeURIComponent(name)}/register`, {
+export async function registerTranscriptConversation(name) {
+  return request(`${BASE}/transcripts/${encodeURIComponent(name)}/register`, {
     method: 'POST',
   });
 }

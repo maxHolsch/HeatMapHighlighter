@@ -1,20 +1,39 @@
 """
 Transcript loading, cleaning, and snippet merging with index mapping.
 
-Replicates the cleaning logic from data/cortico/clean_cortico_jsons.py and
-the merge logic from highlight-extraction/utils.py, adding original-index
-tracking so that merged-snippet LLM scores can be mapped back to the
+Original-index tracking lets merged-snippet LLM scores map back to the
 original (un-merged) snippet list.
 """
 
+import hashlib
 import json
 import re
 from typing import Dict, List, Optional, Tuple
 
 from sqlmodel import select
 
-from config import RAW_TRANSCRIPTS_DIR
+from config import TRANSCRIPTS_DIR, find_audio_for
 from db import Conversation, Snippet, session
+
+
+def transcript_hash(original_snippets: List[Dict]) -> str:
+    """Stable 12-char digest of snippet boundaries + text. Used by the cache
+    layer to invalidate predictions whose underlying transcript has changed
+    (e.g. after re-transcribing with a different ASR provider)."""
+    canonical = json.dumps(
+        [
+            {
+                "i": i,
+                "s": round(float(s.get("audio_start_offset") or 0.0), 3),
+                "e": round(float(s.get("audio_end_offset") or 0.0), 3),
+                "t": s.get("transcript") or "",
+            }
+            for i, s in enumerate(original_snippets)
+        ],
+        sort_keys=True,
+        ensure_ascii=False,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
 
 
 # ---------------------------------------------------------------------------
@@ -23,7 +42,7 @@ from db import Conversation, Snippet, session
 
 def clean_raw_transcript(raw_json: dict) -> List[Dict]:
     """
-    Turn a raw Cortico transcript JSON into a flat list of cleaned snippets.
+    Turn a raw transcript JSON into a flat list of cleaned snippets.
 
     Each output snippet has:
         audio_start_offset, audio_end_offset, speaker_id, speaker_name, transcript
@@ -191,22 +210,26 @@ def _load_from_db(conversation_id: str) -> Tuple[List[Dict], Optional[Dict]]:
 
 def load_conversation(conversation_id: str) -> Dict:
     """
-    Load a transcript (preferring the corpus DB, falling back to raw Cortico
-    JSON), clean it, merge short snippets, and return everything the frontend
-    and LLM pipeline need.
+    Load a transcript. The JSON file on disk is the source of truth for
+    the highlighter — it reflects the latest ASR run. The corpus DB is
+    only consulted when no JSON exists (e.g. audio-only corpus-heatmap
+    ingestions). This prevents stale DB snippets from masking a freshly
+    re-transcribed JSON.
     """
-    original_snippets, db_meta = _load_from_db(conversation_id)
-
-    if not original_snippets:
-        raw_path = RAW_TRANSCRIPTS_DIR / f"{conversation_id}.json"
-        if not raw_path.exists():
-            raise FileNotFoundError(
-                f"Conversation {conversation_id!r} not found in corpus DB or "
-                f"raw transcripts dir ({RAW_TRANSCRIPTS_DIR})."
-            )
+    raw_path = TRANSCRIPTS_DIR / f"{conversation_id}.json"
+    original_snippets: List[Dict] = []
+    db_meta: Optional[Dict] = None
+    if raw_path.exists():
         with raw_path.open("r", encoding="utf-8") as f:
             raw_json = json.load(f)
         original_snippets = clean_raw_transcript(raw_json)
+    else:
+        original_snippets, db_meta = _load_from_db(conversation_id)
+        if not original_snippets:
+            raise FileNotFoundError(
+                f"Conversation {conversation_id!r} not found in corpus DB or "
+                f"transcripts dir ({TRANSCRIPTS_DIR})."
+            )
 
     merged_snippets, merge_mapping = merge_snippets_with_mapping(
         [dict(s) for s in original_snippets]  # copy so originals stay clean
@@ -219,6 +242,19 @@ def load_conversation(conversation_id: str) -> Dict:
     }
     if db_meta is not None:
         payload.update(db_meta)
+    else:
+        # JSON-only path: derive audio + duration from disk so the highlighter
+        # can play audio without requiring a corpus-DB ingest. db_id stays a
+        # string here; the audio route accepts both string names and int PKs.
+        audio_path = find_audio_for(conversation_id)
+        duration = max(
+            (s.get("audio_end_offset") or 0.0) for s in original_snippets
+        ) if original_snippets else 0.0
+        payload.update({
+            "db_id": conversation_id,
+            "has_audio": audio_path is not None,
+            "duration_sec": duration,
+        })
     return payload
 
 
@@ -226,7 +262,7 @@ def list_conversations() -> List[str]:
     """Return sorted list of conversation IDs.
 
     Sources, in order: titles from the corpus DB (audio-ingested episodes),
-    then any raw Cortico JSON stems on disk. Deduplicated.
+    then any transcript JSON stems on disk. Deduplicated.
     """
     ids: List[str] = []
     seen = set()
@@ -242,8 +278,8 @@ def list_conversations() -> List[str]:
         # DB not yet initialised — fall back to filesystem only.
         pass
 
-    if RAW_TRANSCRIPTS_DIR.exists():
-        for p in RAW_TRANSCRIPTS_DIR.glob("conversation-*.json"):
+    if TRANSCRIPTS_DIR.exists():
+        for p in TRANSCRIPTS_DIR.glob("*.json"):
             if p.stem not in seen:
                 seen.add(p.stem)
                 ids.append(p.stem)

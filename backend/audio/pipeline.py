@@ -7,12 +7,12 @@ a corpus:
 - `ingest_audio_file(corpus_id, title, audio_src)`
     ASR → snippets → embeddings. Used for raw audio-only conversations.
 
-- `ingest_cortico_with_audio(corpus_id, title, transcript_path, audio_src)`
-    Uses existing Cortico snippets for TEXT, slices audio by the transcript's
-    per-snippet timestamps, and encodes style per slice. Runs topic encoder
-    on the text.
+- `ingest_transcript_with_audio(corpus_id, title, transcript_path, audio_src)`
+    Uses existing transcript snippets for TEXT, slices audio by the
+    transcript's per-snippet timestamps, and encodes style per slice. Runs
+    topic encoder on the text.
 
-- `ingest_cortico_only(corpus_id, title, transcript_path)`
+- `ingest_transcript_only(corpus_id, title, transcript_path)`
     Text-only: topic embeddings only, no style. Still visible in the corpus
     heatmap (style axis is greyed out for text-only rows).
 
@@ -147,7 +147,7 @@ def ingest_audio_file(
     return _persist(
         corpus_id=corpus_id,
         title=title,
-        cortico_id=None,
+        transcript_id=None,
         transcript_path=None,
         audio_path=str(wav_dest),
         duration_sec=prep.duration_sec(samples),
@@ -156,8 +156,8 @@ def ingest_audio_file(
             "start_sec": s.start,
             "end_sec": s.end,
             "text": s.text,
-            "speaker_id": None,
-            "speaker_name": None,
+            "speaker_id": s.speaker,
+            "speaker_name": f"Speaker {s.speaker}" if s.speaker else None,
             "words": [{"idx": j, "start": w.start, "end": w.end, "text": w.text}
                       for j, w in enumerate(s.words)],
         } for i, s in enumerate(snippets)],
@@ -167,13 +167,13 @@ def ingest_audio_file(
 
 
 # ---------------------------------------------------------------------------
-# Cortico + audio pairing
+# Pre-existing transcript JSON + audio pairing
 # ---------------------------------------------------------------------------
 
-def _load_cortico(transcript_path: str) -> Tuple[str, List[Dict]]:
+def _load_transcript_json(transcript_path: str) -> Tuple[str, List[Dict]]:
     with open(transcript_path, "r", encoding="utf-8") as f:
         raw = json.load(f)
-    cortico_id = Path(transcript_path).stem
+    transcript_id = Path(transcript_path).stem
     snippets = []
     for i, s in enumerate(raw.get("snippets", [])):
         text = " ".join(w["word"] for w in s.get("words", [])).strip()
@@ -194,24 +194,24 @@ def _load_cortico(transcript_path: str) -> Tuple[str, List[Dict]]:
                 for j, w in enumerate(s.get("words", []))
             ],
         })
-    return cortico_id, snippets
+    return transcript_id, snippets
 
 
-def ingest_cortico_only(
+def ingest_transcript_only(
     corpus_id: int,
     title: str,
     transcript_path: str,
 ) -> int:
     """Text-only ingestion: topic embeddings, no style."""
     from encoders import topic as topic_enc
-    cortico_id, snippets_data = _load_cortico(transcript_path)
+    transcript_id, snippets_data = _load_transcript_json(transcript_path)
     texts = [s["text"] for s in snippets_data]
     topic_vecs = topic_enc.embed(texts)
     style_vecs = np.zeros((len(snippets_data), STYLE_EMBED_DIM), dtype=np.float32)
     return _persist(
         corpus_id=corpus_id,
         title=title,
-        cortico_id=cortico_id,
+        transcript_id=transcript_id,
         transcript_path=transcript_path,
         audio_path=None,
         duration_sec=snippets_data[-1]["end_sec"] if snippets_data else 0.0,
@@ -221,13 +221,13 @@ def ingest_cortico_only(
     )
 
 
-def ingest_cortico_with_audio(
+def ingest_transcript_with_audio(
     corpus_id: int,
     title: str,
     transcript_path: str,
     audio_src: str,
 ) -> int:
-    """Cortico snippets for text, matching audio for style embeddings."""
+    """Pre-existing transcript snippets for text, paired audio for style."""
     from encoders import topic as topic_enc
     from encoders import style as style_enc
 
@@ -235,7 +235,7 @@ def ingest_cortico_with_audio(
     wav_dest = AUDIO_DIR / f"corpus_{corpus_id}" / f"{title}.wav"
     prep.write_wav_16k(samples, wav_dest)
 
-    cortico_id, snippets_data = _load_cortico(transcript_path)
+    transcript_id, snippets_data = _load_transcript_json(transcript_path)
     texts = [s["text"] for s in snippets_data]
     topic_vecs = topic_enc.embed(texts)
 
@@ -251,7 +251,7 @@ def ingest_cortico_with_audio(
     return _persist(
         corpus_id=corpus_id,
         title=title,
-        cortico_id=cortico_id,
+        transcript_id=transcript_id,
         transcript_path=transcript_path,
         audio_path=str(wav_dest),
         duration_sec=prep.duration_sec(samples),
@@ -269,7 +269,7 @@ def _persist(
     *,
     corpus_id: int,
     title: str,
-    cortico_id: Optional[str],
+    transcript_id: Optional[str],
     transcript_path: Optional[str],
     audio_path: Optional[str],
     duration_sec: float,
@@ -294,7 +294,7 @@ def _persist(
         conv = Conversation(
             corpus_id=corpus_id,
             title=title,
-            cortico_id=cortico_id,
+            transcript_id=transcript_id,
             transcript_path=transcript_path,
             audio_path=audio_path,
             duration_sec=duration_sec,

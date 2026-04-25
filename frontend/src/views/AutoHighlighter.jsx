@@ -10,7 +10,7 @@ import {
   fetchSpanPredictionFiles, fetchSpanPrediction,
   saveHighlights,
   fetchAnthologies, createAnthology, upsertSection, addClip,
-  registerCorticoConversation,
+  registerTranscriptConversation,
   estimateRunCost,
   fetchPricing,
   audioUrl,
@@ -43,6 +43,27 @@ function deriveFullText(spans) {
   return spans.map((s) => s.text || '').join(' ').replace(/\s+/g, ' ').trim();
 }
 
+// Per-highlight status is derived from per-span statuses. 'accepted' / 'rejected'
+// only when every span agrees; otherwise 'pending' (covers mixed and any-pending).
+function deriveHlStatus(spans) {
+  if (!spans || !spans.length) return 'pending';
+  if (spans.every((s) => s.status === 'accepted')) return 'accepted';
+  if (spans.every((s) => s.status === 'rejected')) return 'rejected';
+  return 'pending';
+}
+
+function normalizeHighlights(arr) {
+  return (arr || []).map((h) => {
+    const spans = (h.spans || []).map((s) => ({ ...s, status: s.status || 'pending' }));
+    return {
+      ...h,
+      spans,
+      status: deriveHlStatus(spans),
+      full_text: h.full_text || deriveFullText(spans),
+    };
+  });
+}
+
 export default function AutoHighlighter({ tweaks }) {
   const [conversations, setConversations] = useState([]);
   const [conv, setConv] = useState('');
@@ -57,8 +78,15 @@ export default function AutoHighlighter({ tweaks }) {
   const [phase, setPhase] = useState(0);
   const [scores, setScores] = useState([]);
   const [highlights, setHighlights] = useState([]);
-  const [selectedHl, setSelectedHl] = useState(null);
+  // Selection is per-snippet (snippet index). Every tile is clickable.
+  // The drawer derives its highlight + span (if any) from tileToSpan[selectedSnippet].
+  const [selectedSnippet, setSelectedSnippet] = useState(null);
   const [filter, setFilter] = useState('all');
+
+  // editBuffer: { [hlId]: [{snippet_index, char_start, char_end} | null, ...] }
+  // Indexed by spanIdx within the highlight. Initialized lazily on first slider
+  // drag; committed to highlights on Accept; discarded on Reject/close.
+  const [editBuffer, setEditBuffer] = useState({});
 
   const [showRunModal, setShowRunModal] = useState(false);
   const [showPreview, setShowPreview] = useState(null);
@@ -75,8 +103,6 @@ export default function AutoHighlighter({ tweaks }) {
   const [pass1Model, setPass1Model] = useState('');
   const [pass2Model, setPass2Model] = useState('');
 
-  const heatStyle = tweaks.heatStyle || 'tiles';
-  const transcriptLayout = tweaks.transcriptLayout || 'stacked';
   const showThreshold = tweaks.threshold ?? 5;
 
   useEffect(() => {
@@ -91,6 +117,7 @@ export default function AutoHighlighter({ tweaks }) {
   useEffect(() => {
     if (!conv) return;
     setTranscript(null); setPhase(0); setScores([]); setHighlights([]);
+    setEditBuffer({}); setSelectedSnippet(null);
     fetchTranscript(conv).then(setTranscript).catch((e) => setError(e.message));
   }, [conv]);
 
@@ -114,11 +141,8 @@ export default function AutoHighlighter({ tweaks }) {
         pass2_model: pass2Model || undefined,
       });
       setScores(res.scores || []);
-      setHighlights((res.highlights || []).map((h) => ({
-        ...h,
-        status: h.status || 'pending',
-        full_text: h.full_text || deriveFullText(h.spans),
-      })));
+      setHighlights(normalizeHighlights(res.highlights));
+      setEditBuffer({});
       setPhase(2);
       if (res.cost) setRunCost(res.cost);
     } catch (e) {
@@ -176,11 +200,8 @@ export default function AutoHighlighter({ tweaks }) {
       const spanFiles = await fetchSpanPredictionFiles(conv);
       if (spanFiles?.length) {
         const spans = await fetchSpanPrediction(conv, spanFiles[0]);
-        setHighlights((spans.highlights || []).map((h) => ({
-          ...h,
-          status: h.status || 'pending',
-          full_text: h.full_text || deriveFullText(h.spans),
-        })));
+        setHighlights(normalizeHighlights(spans.highlights));
+        setEditBuffer({});
         setPhase(2);
       } else {
         setPhase(1);
@@ -207,13 +228,124 @@ export default function AutoHighlighter({ tweaks }) {
     } catch (e) { setError(e.message); }
   }
 
-  function setStatus(id, status) {
-    setHighlights((prev) => prev.map((h) => h.id === id ? { ...h, status } : h));
+  const snippets = transcript?.original_snippets || [];
+
+  function getEffectiveSpan(hl, spanIdx) {
+    if (!hl) return null;
+    const buf = editBuffer[hl.id]?.[spanIdx];
+    const sp = hl.spans?.[spanIdx];
+    if (!sp) return null;
+    if (buf) return { snippet_index: sp.snippet_index, char_start: buf.char_start, char_end: buf.char_end };
+    return { snippet_index: sp.snippet_index, char_start: sp.char_start, char_end: sp.char_end };
   }
 
-  const accepted = highlights.filter((h) => h.status === 'accepted');
-  const pending = highlights.filter((h) => h.status === 'pending');
-  const allDecided = highlights.length > 0 && pending.length === 0;
+  function setSpanBoundaries(hlId, spanIdx, charStart, charEnd) {
+    setEditBuffer((prev) => {
+      const hl = highlights.find((h) => h.id === hlId);
+      if (!hl) return prev;
+      const cur = prev[hlId] || hl.spans.map(() => null);
+      const next = cur.map((b, i) => i === spanIdx
+        ? { snippet_index: hl.spans[i].snippet_index, char_start: charStart, char_end: charEnd }
+        : b
+      );
+      return { ...prev, [hlId]: next };
+    });
+  }
+
+  function discardSpanEdits(hlId, spanIdx) {
+    setEditBuffer((prev) => {
+      const cur = prev[hlId];
+      if (!cur || !cur[spanIdx]) return prev;
+      const next = cur.map((b, i) => i === spanIdx ? null : b);
+      if (next.every((b) => b == null)) {
+        const { [hlId]: _, ...rest } = prev;
+        return rest;
+      }
+      return { ...prev, [hlId]: next };
+    });
+  }
+
+  // Set status on a single span. On 'accepted', commits any buffered char-range
+  // edits for just that span and re-derives the span text. Then re-derives the
+  // overall hl.status for legacy display + saving.
+  function setSpanStatus(hlId, spanIdx, status) {
+    setHighlights((prev) => prev.map((h) => {
+      if (h.id !== hlId) return h;
+      const newSpans = h.spans.map((s, i) => {
+        if (i !== spanIdx) return s;
+        const buf = editBuffer[hlId]?.[spanIdx];
+        const sn = snippets[s.snippet_index];
+        const cs = (status === 'accepted' && buf) ? buf.char_start : s.char_start;
+        const ce = (status === 'accepted' && buf) ? buf.char_end : s.char_end;
+        const text = sn ? sn.transcript.slice(cs, ce) : s.text;
+        return { ...s, status, char_start: cs, char_end: ce, text };
+      });
+      return { ...h, spans: newSpans, full_text: deriveFullText(newSpans), status: deriveHlStatus(newSpans) };
+    }));
+    discardSpanEdits(hlId, spanIdx);
+  }
+
+  function acceptSpan(hlId, spanIdx) { setSpanStatus(hlId, spanIdx, 'accepted'); }
+  function rejectSpan(hlId, spanIdx) { setSpanStatus(hlId, spanIdx, 'rejected'); }
+
+  // All spans flattened and ordered by snippet index — counters + filter only.
+  const sortedSpans = useMemo(() => {
+    const arr = [];
+    highlights.forEach((hl) => {
+      hl.spans?.forEach((sp, idx) => arr.push({
+        hlId: hl.id, spanIdx: idx, snippetIdx: sp.snippet_index, status: sp.status || 'pending',
+      }));
+    });
+    arr.sort((a, b) => a.snippetIdx - b.snippetIdx);
+    return arr;
+  }, [highlights]);
+
+  function visibleSnippetIndices() {
+    if (filter === 'all') return snippets.map((_, i) => i);
+    const want = new Set();
+    sortedSpans.forEach((s) => {
+      if ((s.status || 'pending') === filter) want.add(s.snippetIdx);
+    });
+    return [...want].sort((a, b) => a - b);
+  }
+
+  function cycleSnippet(direction) {
+    const visible = visibleSnippetIndices();
+    if (!visible.length) { setSelectedSnippet(null); return; }
+    if (selectedSnippet == null) { setSelectedSnippet(visible[0]); return; }
+    const cur = visible.indexOf(selectedSnippet);
+    if (cur === -1) { setSelectedSnippet(visible[0]); return; }
+    const next = (cur + direction + visible.length) % visible.length;
+    setSelectedSnippet(visible[next]);
+  }
+
+  // Esc closes; j/ArrowDown next; k/ArrowUp previous. Active while drawer is open.
+  useEffect(() => {
+    if (selectedSnippet == null) return;
+    function onKey(e) {
+      const tag = (e.target?.tagName || '').toLowerCase();
+      if (tag === 'input' || tag === 'textarea') return;
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        const ref = tileToSpan[selectedSnippet];
+        if (ref) discardSpanEdits(ref.hlId, ref.spanIdx);
+        setSelectedSnippet(null);
+      } else if (e.key === 'j' || e.key === 'ArrowDown') {
+        e.preventDefault(); cycleSnippet(1);
+      } else if (e.key === 'k' || e.key === 'ArrowUp') {
+        e.preventDefault(); cycleSnippet(-1);
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedSnippet, sortedSpans, filter, highlights, editBuffer, snippets.length]);
+
+  // Span-level counters (replaces the old highlight-level counts).
+  const acceptedSpans = sortedSpans.filter((s) => s.status === 'accepted');
+  const pendingSpans = sortedSpans.filter((s) => (s.status || 'pending') === 'pending');
+  const rejectedSpans = sortedSpans.filter((s) => s.status === 'rejected');
+  const allDecided = sortedSpans.length > 0 && pendingSpans.length === 0;
 
   const snippetMeta = useMemo(() => {
     const m = {};
@@ -222,7 +354,7 @@ export default function AutoHighlighter({ tweaks }) {
       highlights.forEach((hl) => {
         hl.spans?.forEach((sp) => {
           if (!m[sp.snippet_index]) m[sp.snippet_index] = {};
-          if (hl.status === 'rejected') return;
+          if (sp.status === 'rejected') return;
           m[sp.snippet_index].hl = hl;
           m[sp.snippet_index].span = sp;
         });
@@ -231,7 +363,23 @@ export default function AutoHighlighter({ tweaks }) {
     return m;
   }, [phase, highlights, scores]);
 
-  const snippets = transcript?.original_snippets || [];
+  // Snippet-index → {hlId, spanIdx} for the first span covering that snippet.
+  // Used for tile clicks and badge rendering.
+  const tileToSpan = useMemo(() => {
+    const m = {};
+    highlights.forEach((hl) => {
+      hl.spans?.forEach((sp, idx) => {
+        if (m[sp.snippet_index] == null) m[sp.snippet_index] = { hlId: hl.id, spanIdx: idx, status: sp.status || 'pending' };
+      });
+    });
+    return m;
+  }, [highlights]);
+
+  const selectedSpanRef = selectedSnippet != null ? tileToSpan[selectedSnippet] : null;
+  const selectedHl = selectedSpanRef ? highlights.find((h) => h.id === selectedSpanRef.hlId) : null;
+  const selectedSpanObj = selectedHl && selectedSpanRef ? selectedHl.spans?.[selectedSpanRef.spanIdx] : null;
+  const selectedSnippetObj = selectedSnippet != null ? snippets[selectedSnippet] : null;
+  const selectedSnippetMeta = selectedSnippet != null ? snippetMeta[selectedSnippet] : null;
 
   return (
     <div style={{ padding: '28px 36px 60px', maxWidth: 1280, margin: '0 auto' }}>
@@ -241,7 +389,7 @@ export default function AutoHighlighter({ tweaks }) {
           Find the moments<br/>where the room got <Em>loud</Em>.
         </Display>
         <p style={{ marginTop: 14, maxWidth: 640, fontSize: 15, color: 'var(--fg-muted)', lineHeight: 1.55 }}>
-          Score every paragraph 0–10. Refine the hot ones into spans. Lift keepers into an anthology.
+          Score every paragraph 0–10. Refine the hot ones into spans. Click a tile to curate one span at a time.
         </p>
         <Burst size={68} color="var(--vermillion)" style={{ position: 'absolute', right: 8, top: -8 }}/>
         <GShape shape="petal" color="cadmium" style={{ right: -34, top: 76, width: 90, height: 90, transform: 'rotate(28deg)' }}/>
@@ -320,7 +468,7 @@ export default function AutoHighlighter({ tweaks }) {
               <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 10, fontSize: 13.5, lineHeight: 1.45 }}>
                 <Step n="01" body={<><b>Score every snippet</b> on a 0–10 scale, with reasoning.</>}/>
                 <Step n="02" body={<><b>Refine the hot ones</b> into character-level spans.</>}/>
-                <Step n="03" body={<><b>You curate</b> — accept, reject, lift to an anthology.</>}/>
+                <Step n="03" body={<><b>You curate</b> — accept, reject, or fine-tune one span at a time.</>}/>
               </div>
               <div style={{ marginTop: 18, fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--fg-on-dark-muted)' }}>
                 est. 4–8 min · claude opus + sonnet
@@ -340,21 +488,19 @@ export default function AutoHighlighter({ tweaks }) {
           duration={transcript?.duration_sec}
           phase={phase}
           highlights={highlights}
+          acceptedSpans={acceptedSpans}
+          pendingSpans={pendingSpans}
+          rejectedSpans={rejectedSpans}
+          allSpans={sortedSpans}
+          allDecided={allDecided}
           threshold={showThreshold}
-        />
-      )}
-
-      {phase >= 1 && transcript && (
-        <TranscriptHeat
-          snippets={snippets}
-          snippetMeta={snippetMeta}
-          highlights={highlights}
-          phase={phase}
-          heatStyle={heatStyle}
-          transcriptLayout={transcriptLayout}
-          showThreshold={showThreshold}
-          onSelectHl={setSelectedHl}
-          setStatus={setStatus}
+          filter={filter}
+          setFilter={setFilter}
+          tileToSpan={tileToSpan}
+          selectedSnippet={selectedSnippet}
+          onTileTap={(idx) => setSelectedSnippet(idx)}
+          onSave={saveCurrent}
+          onLift={() => setShowLift(true)}
         />
       )}
 
@@ -373,19 +519,43 @@ export default function AutoHighlighter({ tweaks }) {
         </Card>
       )}
 
-      {phase >= 2 && (
-        <ReviewRail
-          highlights={highlights}
-          accepted={accepted}
-          pending={pending}
-          allDecided={allDecided}
-          filter={filter}
-          setFilter={setFilter}
-          selectedHl={selectedHl}
-          setSelectedHl={setSelectedHl}
-          setStatus={setStatus}
-          onSave={saveCurrent}
-          onLift={() => setShowLift(true)}
+      {selectedSnippetObj && (
+        <SnippetDrawer
+          snippetIdx={selectedSnippet}
+          snippet={selectedSnippetObj}
+          score={selectedSnippetMeta?.score ?? null}
+          reasoning={selectedSnippetMeta?.reasoning ?? null}
+          hl={selectedHl}
+          spanIdx={selectedSpanRef?.spanIdx ?? null}
+          span={selectedSpanObj}
+          editedSpan={selectedHl && selectedSpanRef
+            ? getEffectiveSpan(selectedHl, selectedSpanRef.spanIdx)
+            : null}
+          onSpanEdit={(cs, ce) => {
+            if (selectedHl && selectedSpanRef) {
+              setSpanBoundaries(selectedHl.id, selectedSpanRef.spanIdx, cs, ce);
+            }
+          }}
+          onAccept={() => {
+            if (selectedHl && selectedSpanRef) {
+              acceptSpan(selectedHl.id, selectedSpanRef.spanIdx);
+            }
+          }}
+          onReject={() => {
+            if (selectedHl && selectedSpanRef) {
+              rejectSpan(selectedHl.id, selectedSpanRef.spanIdx);
+            }
+          }}
+          onClose={() => {
+            if (selectedHl && selectedSpanRef) {
+              discardSpanEdits(selectedHl.id, selectedSpanRef.spanIdx);
+            }
+            setSelectedSnippet(null);
+          }}
+          onPrev={() => cycleSnippet(-1)}
+          onNext={() => cycleSnippet(1)}
+          dbId={transcript?.db_id}
+          hasAudio={transcript?.has_audio}
         />
       )}
 
@@ -459,7 +629,7 @@ export default function AutoHighlighter({ tweaks }) {
       {showLift && (
         <LiftToAnthologyModal
           conversation={conv}
-          accepted={accepted}
+          highlights={highlights}
           snippets={snippets}
           onClose={() => setShowLift(false)}
           onDone={() => { setShowLift(false); alert('Lifted to anthology.'); }}
@@ -527,37 +697,36 @@ function Step({ n, body }) {
   );
 }
 
-// Picture-frame drag interaction constants. The fan grid below uses 24
-// columns; tile aspect-ratio is 1.4:1; gap is 3px. The frame is sized as
-// a multiple of one tile so it visibly "frames" whatever it's hovering.
+// --- Fan grid layout constants ---
 const FAN_COLS = 24;
 const FAN_GAP = 3;
 const TILE_ASPECT = 1.4;
-const FRAME_TILE_SCALE = 1.55;     // frame is ~1.55x a tile
-const FRAME_PADDING = 10;          // extra px around the framed tile
+const FRAME_TILE_SCALE = 1.55;
+const FRAME_PADDING = 10;
 const SNAP_TRANSITION = 'left 380ms cubic-bezier(.34,1.56,.64,1), top 380ms cubic-bezier(.34,1.56,.64,1), transform 280ms cubic-bezier(.34,1.56,.64,1)';
 
 function FanHeatmap({
   conversationTitle, snippets, snippetMeta, dbId, hasAudio, duration,
-  phase, highlights, threshold,
+  phase, highlights, acceptedSpans, pendingSpans, rejectedSpans, allSpans, allDecided, threshold,
+  filter, setFilter, tileToSpan, selectedSnippet, onTileTap, onSave, onLift,
 }) {
   const audioRef = useRef(null);
   const gridRef = useRef(null);
   const [playing, setPlaying] = useState(false);
   const [currentSec, setCurrentSec] = useState(0);
 
-  // Frame state — top-left coordinate of the frame in grid-relative pixels.
   const [framePos, setFramePos] = useState({ x: 0, y: 0 });
   const [dragging, setDragging] = useState(false);
-  const [tilt, setTilt] = useState({ rx: 0, rz: 0 }); // playful 3D tilt
+  const [tilt, setTilt] = useState({ rx: 0, rz: 0 });
   const dragOffsetRef = useRef({ ox: 0, oy: 0 });
   const lastClientXRef = useRef(0);
   const lastTileRef = useRef(-1);
   const initRef = useRef(false);
+  const dragStartRef = useRef({ x: 0, y: 0 });
+  const movedRef = useRef(false);
 
   const audioSrc = (hasAudio && dbId != null) ? audioUrl(dbId) : null;
 
-  // Find the snippet containing the current playhead — used to glow the active tile.
   const playingIdx = useMemo(() => {
     if (!snippets?.length) return -1;
     for (let i = 0; i < snippets.length; i++) {
@@ -569,8 +738,6 @@ function FanHeatmap({
     return -1;
   }, [currentSec, snippets]);
 
-  // ---- layout math (recomputed on every interaction so it stays correct
-  //      across window resizes without a ResizeObserver) ----
   function tileSize() {
     const grid = gridRef.current;
     if (!grid) return { w: 0, h: 0 };
@@ -608,7 +775,6 @@ function FanHeatmap({
     return { x: x + w / 2 - fw / 2, y: y + h / 2 - fh / 2 };
   }
 
-  // ---- audio control ----
   function playSnippet(idx) {
     if (idx < 0 || !audioSrc) return;
     if (lastTileRef.current === idx) return;
@@ -634,7 +800,6 @@ function FanHeatmap({
     }
   }
 
-  // ---- frame drag handlers ----
   function handlePointerDown(e) {
     if (!audioSrc) return;
     e.preventDefault();
@@ -646,22 +811,24 @@ function FanHeatmap({
       oy: e.clientY - frameRect.top,
     };
     lastClientXRef.current = e.clientX;
+    dragStartRef.current = { x: e.clientX, y: e.clientY };
+    movedRef.current = false;
   }
   function handlePointerMove(e) {
     if (!dragging) return;
+    const ds = dragStartRef.current;
+    if (Math.abs(e.clientX - ds.x) > 4 || Math.abs(e.clientY - ds.y) > 4) movedRef.current = true;
     const grid = gridRef.current?.getBoundingClientRect();
     if (!grid) return;
     const x = e.clientX - grid.left - dragOffsetRef.current.ox;
     const y = e.clientY - grid.top - dragOffsetRef.current.oy;
     setFramePos({ x, y });
 
-    // Velocity-based tilt — leans into the direction of motion.
     const dx = e.clientX - lastClientXRef.current;
     lastClientXRef.current = e.clientX;
     const rz = Math.max(-14, Math.min(14, -dx * 1.2));
     setTilt({ rx: 10, rz });
 
-    // Which tile is the frame's center over right now?
     const { fw, fh } = frameSize();
     const centerX = x + fw / 2;
     const centerY = y + fh / 2;
@@ -674,20 +841,24 @@ function FanHeatmap({
     setDragging(false);
     setTilt({ rx: 0, rz: 0 });
 
-    // Snap to the tile under the frame's center on release.
     const { fw, fh } = frameSize();
     const centerX = framePos.x + fw / 2;
     const centerY = framePos.y + fh / 2;
     const idx = tileAtCenter(centerX, centerY);
+
+    // Tap (no real drag) on frame → treat as click on the tile under it.
+    if (!movedRef.current) {
+      if (idx >= 0 && onTileTap) onTileTap(idx);
+      return;
+    }
+
     if (idx >= 0) {
       setFramePos(frameTopLeftFromTile(idx));
-      // Re-fire play in case the snap landed us on a tile we hadn't crossed.
       lastTileRef.current = -1;
       playSnippet(idx);
     }
   }
 
-  // Place the frame over snippet 0 once the grid has a measurable width.
   useEffect(() => {
     if (initRef.current || !snippets.length) return;
     let tries = 0;
@@ -708,24 +879,55 @@ function FanHeatmap({
   const totalSnippets = snippets?.length ?? 0;
   const hot = totalSnippets ? snippets.filter((_, i) => (snippetMeta[i]?.score ?? -1) >= threshold).length : 0;
   const { fw, fh } = frameSize();
+  const hasSpans = phase >= 2 && (allSpans?.length ?? 0) > 0;
 
   return (
     <Card padding={0} style={{ marginBottom: 20 }} withGrain={false}>
       <div style={{ padding: '20px 24px 0' }}>
         <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', flexWrap: 'wrap', gap: 14 }}>
           <div>
-            <Eyebrow color="var(--cobalt)">Fan view · drag the picture frame</Eyebrow>
+            <Eyebrow color="var(--cobalt)">Fan view · click a tile to curate</Eyebrow>
             <Display size={36} style={{ marginTop: 6 }}>
               The whole <Em>episode</Em>, lit up.
             </Display>
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-            <Badge kind="info">{totalSnippets} snippets</Badge>
-            {phase >= 2 && <Badge kind="ok" dot>{highlights?.length ?? 0} highlights</Badge>}
-            <Badge kind="warn">{hot} ≥ {threshold}</Badge>
-          </div>
+          {hasSpans ? (
+            <div style={{ textAlign: 'right' }}>
+              <div style={{ fontFamily: 'var(--font-display)', fontSize: 36, lineHeight: 1, color: 'var(--ink)' }}>
+                <Em>{acceptedSpans.length}</Em><span style={{ color: 'var(--fg-muted)' }}> / {allSpans.length}</span> spans kept
+              </div>
+              <div style={{ marginTop: 6, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg-muted)' }}>
+                {pendingSpans.length} pending · {rejectedSpans.length} rejected
+              </div>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <Badge kind="info">{totalSnippets} snippets</Badge>
+              <Badge kind="warn">{hot} ≥ {threshold}</Badge>
+            </div>
+          )}
         </div>
       </div>
+
+      {hasSpans && (
+        <div style={{ padding: '14px 24px 0', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            {['all', 'pending', 'accepted', 'rejected'].map((f) => (
+              <button key={f} onClick={() => setFilter(f)} style={filterPillStyle(filter === f)}>
+                {f}
+              </button>
+            ))}
+          </div>
+          <span style={{ flex: 1 }}/>
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg-muted)' }}>
+            {allDecided ? 'all spans decided — ready to save' : `${pendingSpans.length} still pending`}
+          </span>
+          <Btn size="sm" kind="paper" icon="download" disabled={!allDecided} onClick={onSave}>Save highlights</Btn>
+          <Btn size="sm" kind="cadmium" icon="book" disabled={acceptedSpans.length === 0} onClick={onLift}>
+            Lift {acceptedSpans.length} to anthology
+          </Btn>
+        </div>
+      )}
 
       {audioSrc && (
         <div style={{ margin: '14px 24px 0', padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 12,
@@ -740,7 +942,7 @@ function FanHeatmap({
             <div style={{ color: 'var(--ink)', fontWeight: 700 }}>
               {playingIdx >= 0
                 ? `Snippet ${playingIdx} · ${fmtTime(currentSec)}`
-                : 'Grab the picture frame and drag it over a snippet'}
+                : 'Click a tile to open the curator drawer · drag the frame to scrub audio'}
             </div>
             {playingIdx >= 0 && snippets[playingIdx] && (
               <div style={{ marginTop: 2, opacity: 0.85, maxWidth: 720, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -781,25 +983,43 @@ function FanHeatmap({
               const muted = score == null;
               const fill = muted ? 'var(--bone)' : heatColor(score, max);
               const live = playingIdx === i;
+              const ref = tileToSpan[i]; // {hlId, spanIdx, status} | undefined
+              const status = ref?.status;
+              const isSelected = selectedSnippet === i;
+
+              let filterDim = 1;
+              if (filter !== 'all') {
+                const s = status || 'pending';
+                if (!ref || s !== filter) filterDim = 0.22;
+              }
+              const tileOpacity = (muted ? 0.45 : 1) * filterDim;
+
               return (
                 <div
                   key={i}
                   title={
                     meta.score != null
-                      ? `#${i} · score ${meta.score}/10 · ${fmtTime(sn.audio_start_offset ?? 0)}`
-                      : `#${i} · ${fmtTime(sn.audio_start_offset ?? 0)}`
+                      ? `#${i} · score ${meta.score}/10 · ${fmtTime(sn.audio_start_offset ?? 0)}${sn.speaker_name ? ' · ' + sn.speaker_name : ''}`
+                      : `#${i} · ${fmtTime(sn.audio_start_offset ?? 0)}${sn.speaker_name ? ' · ' + sn.speaker_name : ''}`
                   }
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onTileTap?.(i);
+                  }}
                   style={{
                     aspectRatio: '1.4 / 1',
                     background: fill,
-                    border: live ? '2px solid var(--ink)' : '1px solid var(--ink)',
+                    border: live || isSelected ? '2px solid var(--ink)' : '1px solid var(--ink)',
                     borderRadius: 3,
                     position: 'relative', overflow: 'hidden',
-                    transform: live ? 'scale(1.18)' : 'scale(1)',
-                    zIndex: live ? 3 : 1,
-                    transition: 'transform 160ms var(--ease-bouncy)',
-                    boxShadow: live ? '2px 2px 0 0 var(--ink)' : 'none',
-                    opacity: muted ? 0.45 : 1,
+                    transform: live ? 'scale(1.18)' : (isSelected ? 'scale(1.12)' : 'scale(1)'),
+                    zIndex: isSelected ? 4 : (live ? 3 : 1),
+                    transition: 'transform 160ms var(--ease-bouncy), opacity 200ms ease',
+                    boxShadow: isSelected
+                      ? '0 0 0 2px var(--vermillion), 2px 2px 0 0 var(--ink)'
+                      : (live ? '2px 2px 0 0 var(--ink)' : 'none'),
+                    opacity: tileOpacity,
+                    cursor: 'pointer',
                   }}
                 >
                   {!muted && (
@@ -807,6 +1027,7 @@ function FanHeatmap({
                       backgroundImage: 'var(--grain-svg-coarse)', backgroundSize: '60px 60px',
                       mixBlendMode: 'multiply', opacity: 0.4, pointerEvents: 'none' }}/>
                   )}
+                  {ref && <TileBadge status={status}/>}
                 </div>
               );
             })}
@@ -824,7 +1045,7 @@ function FanHeatmap({
               onPointerMove={handlePointerMove}
               onPointerUp={handlePointerUp}
               onPointerCancel={handlePointerUp}
-              caption={playingIdx >= 0 ? `#${playingIdx} · ${fmtTime(currentSec)}` : 'drag me'}
+              caption={playingIdx >= 0 ? `#${playingIdx} · ${fmtTime(currentSec)}` : 'drag · or tap a tile'}
             />
           ) : null}
         </div>
@@ -834,13 +1055,50 @@ function FanHeatmap({
   );
 }
 
+function filterPillStyle(active) {
+  return {
+    fontFamily: 'var(--font-mono)', fontSize: 11,
+    padding: '4px 10px', borderRadius: 999,
+    border: '2px solid var(--ink)',
+    background: active ? 'var(--ink)' : 'var(--paper)',
+    color: active ? 'var(--paper)' : 'var(--ink)',
+    cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.08em',
+  };
+}
+
+function TileBadge({ status }) {
+  if (status === 'accepted') {
+    return (
+      <svg width={11} height={11} viewBox="0 0 24 24"
+        style={{ position: 'absolute', top: 2, right: 2, pointerEvents: 'none' }}>
+        <circle cx="12" cy="12" r="11" fill="var(--grass)" stroke="var(--ink)" strokeWidth="2"/>
+        <path d="M7 12l3 3 7-7" stroke="var(--paper)" strokeWidth="3" fill="none" strokeLinecap="round" strokeLinejoin="round"/>
+      </svg>
+    );
+  }
+  if (status === 'rejected') {
+    return (
+      <svg width={11} height={11} viewBox="0 0 24 24"
+        style={{ position: 'absolute', top: 2, right: 2, pointerEvents: 'none' }}>
+        <circle cx="12" cy="12" r="11" fill="var(--vermillion)" stroke="var(--ink)" strokeWidth="2"/>
+        <path d="M7 7l10 10M17 7L7 17" stroke="var(--paper)" strokeWidth="3" fill="none" strokeLinecap="round"/>
+      </svg>
+    );
+  }
+  return (
+    <span style={{
+      position: 'absolute', top: 2, right: 2, width: 7, height: 7,
+      borderRadius: '50%', background: 'var(--cadmium)',
+      border: '1.5px solid var(--ink)', pointerEvents: 'none',
+    }}/>
+  );
+}
+
 function PictureFrame({
   x, y, w, h, dragging, tilt,
   onPointerDown, onPointerMove, onPointerUp, onPointerCancel,
   caption,
 }) {
-  // Z-lift while dragging gives the frame a hovering feel; on release it
-  // snaps back down with the bouncy transition defined in SNAP_TRANSITION.
   const lift = dragging ? 36 : 0;
   return (
     <div
@@ -849,7 +1107,7 @@ function PictureFrame({
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerCancel}
       role="slider"
-      aria-label="Picture-frame snippet selector — drag over the grid to peek into snippets"
+      aria-label="Picture-frame snippet selector — drag over the grid to peek into snippets, tap to open the curator drawer"
       style={{
         position: 'absolute',
         left: x, top: y, width: w, height: h,
@@ -864,7 +1122,6 @@ function PictureFrame({
         zIndex: 20,
       }}
     >
-      {/* Outer matte ring — playful red */}
       <div style={{
         position: 'absolute', inset: -6,
         border: '2px solid var(--vermillion)',
@@ -875,7 +1132,6 @@ function PictureFrame({
         transition: 'box-shadow 200ms ease',
         pointerEvents: 'none',
       }}/>
-      {/* Frame body — thick ink border, transparent interior so the tile shows through */}
       <div style={{
         position: 'absolute', inset: 0,
         border: '8px solid var(--ink)',
@@ -883,7 +1139,6 @@ function PictureFrame({
         background: 'transparent',
         pointerEvents: 'none',
       }}/>
-      {/* Top brass label like a museum plaque */}
       <div style={{
         position: 'absolute', top: -12, left: '50%', transform: 'translateX(-50%)',
         background: 'var(--cadmium)', color: 'var(--ink)',
@@ -893,9 +1148,8 @@ function PictureFrame({
         whiteSpace: 'nowrap', boxShadow: '1.5px 1.5px 0 0 var(--ink)',
         pointerEvents: 'none',
       }}>
-        {dragging ? 'peeking' : 'pick a snippet'}
+        {dragging ? 'peeking' : 'tap or drag'}
       </div>
-      {/* Bottom caption — current snippet & time */}
       <div style={{
         position: 'absolute', bottom: -22, left: '50%', transform: 'translateX(-50%)',
         background: 'var(--ink)', color: 'var(--paper)',
@@ -905,7 +1159,6 @@ function PictureFrame({
       }}>
         {caption}
       </div>
-      {/* Tiny corner nails for character */}
       {[ [4,4], ['auto',4,4,'auto'], [4,'auto','auto',4], ['auto','auto',4,4] ].map((pos, i) => (
         <span key={i} style={{
           position: 'absolute',
@@ -915,36 +1168,6 @@ function PictureFrame({
         }}/>
       ))}
     </div>
-  );
-}
-
-function TranscriptHeat({ snippets, snippetMeta, highlights, phase, heatStyle, transcriptLayout, showThreshold, onSelectHl, setStatus }) {
-  const max = 10;
-  return (
-    <Card style={{ marginBottom: 24, padding: 0 }} withGrain={false}>
-      <div style={{ position: 'relative' }}>
-        <div style={{ padding: '22px 26px 0', position: 'relative' }}>
-          <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', flexWrap: 'wrap', gap: 14 }}>
-            <div>
-              <Eyebrow color="var(--vermillion)">Conversation heat — pass 1</Eyebrow>
-              <Display size={46} style={{ marginTop: 6 }}>Where the room got <Em>loud</Em>.</Display>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-              <Badge kind="ok" dot>Live</Badge>
-              <Badge kind="info">{phase >= 2 ? `${highlights.length} spans` : 'scores only'}</Badge>
-              <Badge kind="warn">{snippets.length} snippets</Badge>
-            </div>
-          </div>
-          <HeatLegend max={max}/>
-        </div>
-        <div style={{ padding: '22px 26px 30px' }}>
-          {transcriptLayout === 'two-col'
-            ? <TwoColLayout snippets={snippets} snippetMeta={snippetMeta} heatStyle={heatStyle} max={max} threshold={showThreshold} phase={phase} onSelectHl={onSelectHl} setStatus={setStatus}/>
-            : <StackedLayout snippets={snippets} snippetMeta={snippetMeta} heatStyle={heatStyle} max={max} threshold={showThreshold} phase={phase} onSelectHl={onSelectHl} setStatus={setStatus}/>
-          }
-        </div>
-      </div>
-    </Card>
   );
 }
 
@@ -966,360 +1189,319 @@ function HeatLegend({ max }) {
   );
 }
 
-function StackedLayout({ snippets, snippetMeta, heatStyle, max, threshold, phase, onSelectHl, setStatus }) {
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: heatStyle === 'margin' ? 22 : 14 }}>
-      {snippets.map((sn, i) => (
-        <SnippetRow key={i} idx={i} sn={sn} meta={snippetMeta[i]}
-          heatStyle={heatStyle} max={max} threshold={threshold} phase={phase}
-          onSelectHl={onSelectHl} setStatus={setStatus}/>
-      ))}
-    </div>
-  );
-}
+// =====================================================================
+//  SnippetDrawer — opens for any clicked snippet. When the snippet has a
+//  Pass-2 span, the drawer shows the proposed span with a slider and
+//  Accept/Reject controls; otherwise it shows the snippet text and
+//  audio playback only (no curation actions until Pass 2 has run).
+// =====================================================================
 
-function TwoColLayout({ snippets, snippetMeta, heatStyle, max, threshold, phase, onSelectHl, setStatus }) {
-  const left = []; const right = [];
-  snippets.forEach((sn, i) => {
-    const role = (sn.speaker_name || '').split(' · ')[0].toLowerCase();
-    (role === 'facilitator' || role === 'organizer' ? left : right).push({ sn, i });
-  });
-  return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18 }}>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-        <Eyebrow color="var(--cobalt)">Facilitator / organizer</Eyebrow>
-        {left.map(({ sn, i }) => <SnippetRow key={i} idx={i} sn={sn} meta={snippetMeta[i]} heatStyle={heatStyle} max={max} threshold={threshold} phase={phase} onSelectHl={onSelectHl} setStatus={setStatus}/>)}
-      </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-        <Eyebrow color="var(--vermillion)">Residents</Eyebrow>
-        {right.map(({ sn, i }) => <SnippetRow key={i} idx={i} sn={sn} meta={snippetMeta[i]} heatStyle={heatStyle} max={max} threshold={threshold} phase={phase} onSelectHl={onSelectHl} setStatus={setStatus}/>)}
-      </div>
-    </div>
-  );
-}
+function SnippetDrawer({
+  snippetIdx, snippet, score, reasoning,
+  hl, spanIdx, span, editedSpan, onSpanEdit,
+  onAccept, onReject, onClose, onPrev, onNext, dbId, hasAudio,
+}) {
+  const audioRef = useRef(null);
+  const audioSrc = (hasAudio && dbId != null) ? audioUrl(dbId) : null;
+  const [playing, setPlaying] = useState(false);
 
-function SnippetRow({ idx, sn, meta, heatStyle, max, threshold, phase, onSelectHl, setStatus }) {
-  const [hover, setHover] = useState(false);
-  const score = meta?.score ?? 0;
-  const hot = score >= threshold;
-  const hl = meta?.hl;
-  const span = meta?.span;
-  const accepted = hl?.status === 'accepted';
-  const rejected = hl?.status === 'rejected';
+  if (!snippet) return null;
 
-  if (heatStyle === 'tiles') {
-    const fill = heatColor(score, max);
-    return (
-      <div onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
-        onClick={() => hl && onSelectHl(hl.id)}
-        style={{ position: 'relative', display: 'grid', gridTemplateColumns: 'auto 1fr', gap: 16,
-          padding: '14px 16px', border: '2px solid var(--ink)', borderRadius: 8,
-          background: hot ? fill : 'var(--paper)',
-          cursor: hl ? 'pointer' : 'default',
-          boxShadow: hover && hot ? '4px 4px 0 0 var(--ink)' : 'none',
-          transition: 'box-shadow 140ms var(--ease-snap), transform 140ms var(--ease-snap)',
-          transform: hover && hot ? 'translate(-2px,-2px)' : 'none',
-          overflow: 'hidden',
-          opacity: rejected ? 0.45 : 1,
-        }}>
-        {hot && <div style={{ position: 'absolute', inset: 0, backgroundImage: 'var(--grain-svg-coarse)',
-          backgroundSize: '200px 200px', mixBlendMode: 'multiply', opacity: 0.35, pointerEvents: 'none' }}/>}
-        <ScoreChip score={score} hot={hot}/>
-        <div style={{ position: 'relative' }}>
-          <SpeakerLabel sn={sn}/>
-          <SnippetText sn={sn} span={span} phase={phase} accepted={accepted}/>
-          {phase >= 2 && hl && <HlStatusFooter hl={hl}/>}
-        </div>
-      </div>
-    );
+  function playSnippet() {
+    if (!audioSrc || !audioRef.current) return;
+    const t = snippet.audio_start_offset ?? 0;
+    try {
+      audioRef.current.currentTime = t;
+      const p = audioRef.current.play();
+      if (p && typeof p.catch === 'function') p.catch(() => {});
+    } catch { /* not ready */ }
+    const stopAt = snippet.audio_end_offset ?? null;
+    if (stopAt != null) {
+      const el = audioRef.current;
+      const onTime = () => {
+        if (el.currentTime >= stopAt) { el.pause(); el.removeEventListener('timeupdate', onTime); }
+      };
+      el.addEventListener('timeupdate', onTime);
+    }
   }
 
-  if (heatStyle === 'underline') {
-    const stripeColor = heatColor(score, max);
-    return (
-      <div onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
-        onClick={() => hl && onSelectHl(hl.id)}
-        style={{ position: 'relative', display: 'grid', gridTemplateColumns: 'auto 1fr', gap: 16,
-          padding: '14px 4px 14px 16px',
-          borderLeft: `6px solid ${hot ? stripeColor : 'var(--line-soft)'}`,
-          cursor: hl ? 'pointer' : 'default',
-          opacity: rejected ? 0.45 : 1,
-          background: hover && hot ? 'var(--paper-warm)' : 'transparent',
-          transition: 'background 140ms var(--ease-snap)',
-        }}>
-        <ScoreChip score={score} hot={hot} muted/>
-        <div>
-          <SpeakerLabel sn={sn}/>
-          <SnippetText sn={sn} span={span} phase={phase} accepted={accepted} highlightWithUnderline/>
-          {phase >= 2 && hl && <HlStatusFooter hl={hl}/>}
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
-      onClick={() => hl && onSelectHl(hl.id)}
-      style={{ position: 'relative', display: 'grid',
-        gridTemplateColumns: '120px 1fr 220px', gap: 18,
-        padding: '16px 0', borderTop: '1px dashed var(--line-soft)',
-        cursor: hl ? 'pointer' : 'default', opacity: rejected ? 0.45 : 1,
-      }}>
-      <div style={{ textAlign: 'right' }}>
-        <SpeakerLabel sn={sn} compact/>
-        <div style={{ marginTop: 10, display: 'inline-flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
-          <ScoreBar score={score} max={max}/>
-          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: hot ? 'var(--vermillion)' : 'var(--fg-muted)' }}>
-            heat = {(score / max).toFixed(2)}
-          </span>
-        </div>
-      </div>
-      <div style={{ position: 'relative', paddingTop: 4 }}>
-        {hot && <Burst size={26} color="var(--vermillion)" style={{ position: 'absolute', left: -34, top: 4 }} strokeWidth={2.5}/>}
-        <SnippetText sn={sn} span={span} phase={phase} accepted={accepted} fontSize={hot ? 17 : 15} display={hot && phase >= 2}/>
-      </div>
-      <div style={{ paddingTop: 6 }}>
-        {hot && (
-          <div style={{ background: 'var(--paper-warm)', border: '2px solid var(--ink)',
-            borderRadius: 6, padding: '10px 12px', fontSize: 12.5, lineHeight: 1.4,
-            position: 'relative', boxShadow: '3px 3px 0 0 var(--ink)' }}>
-            <Eyebrow color="var(--cobalt)" style={{ marginBottom: 6 }}>Why salient</Eyebrow>
-            <span style={{ color: 'var(--ink)' }}>{meta?.reasoning || hl?.reasoning}</span>
-            {phase >= 2 && hl && (
-              <div style={{ marginTop: 10, display: 'flex', gap: 6 }}>
-                <button onClick={(e) => { e.stopPropagation(); setStatus(hl.id, 'accepted'); }}
-                  style={miniBtn(hl.status === 'accepted' ? 'var(--grass)' : 'var(--paper)', 'var(--ink)')}>
-                  <Icon name="check" size={11}/> accept
-                </button>
-                <button onClick={(e) => { e.stopPropagation(); setStatus(hl.id, 'rejected'); }}
-                  style={miniBtn(hl.status === 'rejected' ? 'var(--vermillion)' : 'var(--paper)', 'var(--ink)')}>
-                  <Icon name="x" size={11}/> reject
-                </button>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function ScoreChip({ score, hot, muted }) {
-  return (
-    <div style={{
-      width: 44, height: 44, borderRadius: 8,
-      border: '2px solid var(--ink)',
-      background: muted ? 'var(--paper)' : (hot ? 'var(--ink)' : 'var(--paper)'),
-      color: muted ? 'var(--ink)' : (hot ? 'var(--cadmium)' : 'var(--fg-muted)'),
-      fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: 16,
-      display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-      flexShrink: 0,
-    }}>{score}</div>
-  );
-}
-
-function ScoreBar({ score, max }) {
-  return (
-    <div style={{ display: 'inline-flex', gap: 2, alignItems: 'flex-end', height: 22 }}>
-      {Array.from({ length: max }).map((_, i) => {
-        const lit = i < score;
-        return <span key={i} style={{
-          width: 5, height: 4 + i*1.6, background: lit ? heatColor(i+1, max) : 'var(--bone)',
-          border: '1px solid var(--ink)',
-        }}/>;
-      })}
-    </div>
-  );
-}
-
-function SpeakerLabel({ sn, compact }) {
-  const name = sn.speaker_name || 'Speaker';
-  return (
-    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, fontWeight: 700,
-      letterSpacing: '0.08em', textTransform: 'uppercase',
-      color: 'var(--fg-muted)', marginBottom: 6 }}>
-      {compact ? name.split(' · ').pop() : name}
-      {!compact && <span style={{ opacity: 0.5 }}> · {fmtTime(sn.audio_start_offset)}</span>}
-    </div>
-  );
-}
-
-function SnippetText({ sn, span, phase, accepted, fontSize = 15.5, highlightWithUnderline, display }) {
-  const text = sn.transcript;
-  if (phase >= 2 && span) {
-    const before = text.slice(0, span.char_start);
-    const inner = text.slice(span.char_start, span.char_end);
-    const after = text.slice(span.char_end);
-    const innerStyle = highlightWithUnderline
-      ? { background: 'var(--cadmium)', padding: '1px 0', borderBottom: '3px solid var(--vermillion)', boxShadow: 'inset 0 -1px 0 0 var(--ink)' }
-      : { background: 'var(--cadmium)', padding: '1px 4px', border: '2px solid var(--ink)', borderRadius: 4, boxShadow: '2px 2px 0 0 var(--ink)' };
-    return (
-      <p style={{
-        fontFamily: display ? 'var(--font-display)' : 'var(--font-sans)',
-        fontSize: display ? 22 : fontSize,
-        lineHeight: display ? 1.15 : 1.55,
-        color: 'var(--ink)', margin: 0, textWrap: 'pretty',
-      }}>
-        {before}
-        <mark style={{ ...innerStyle, color: 'var(--ink)' }}>{inner}</mark>
-        {after}
-        {accepted && (
-          <span style={{ marginLeft: 8, display: 'inline-flex', alignItems: 'center', gap: 4, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--grass)' }}>
-            <Icon name="check" size={12}/> accepted
-          </span>
-        )}
-      </p>
-    );
-  }
-  return (
-    <p style={{ fontSize, lineHeight: 1.55, color: 'var(--ink)', margin: 0, textWrap: 'pretty' }}>{text}</p>
-  );
-}
-
-function HlStatusFooter({ hl }) {
-  return (
-    <div style={{ marginTop: 8, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg-muted)',
-      display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-      <span style={{ textTransform: 'uppercase', letterSpacing: '0.08em' }}>{hl.id}</span>
-      <span>·</span>
-      <span style={{
-        color: hl.status === 'accepted' ? 'var(--grass)' :
-               hl.status === 'rejected' ? 'var(--vermillion)' : 'var(--cobalt)'
-      }}>{hl.status}</span>
-    </div>
-  );
-}
-
-function miniBtn(bg, fg) {
-  return {
-    fontFamily: 'var(--font-mono)', fontSize: 10.5, padding: '3px 8px',
-    border: '1.5px solid var(--ink)', borderRadius: 999,
-    background: bg, color: fg, cursor: 'pointer',
-    display: 'inline-flex', alignItems: 'center', gap: 4,
-  };
-}
-
-function ReviewRail({ highlights, accepted, pending, allDecided, filter, setFilter, selectedHl, setSelectedHl, setStatus, onSave, onLift }) {
-  const visible = filter === 'all' ? highlights : highlights.filter((h) => h.status === filter);
-  return (
-    <Card padding={0} style={{ marginBottom: 24 }} withGrain={false}>
-      <div style={{ display: 'grid', gridTemplateColumns: '320px 1fr', gap: 0 }}>
-        <div style={{ background: 'var(--paper-warm)', padding: 22, borderRight: '2px solid var(--ink)', position: 'relative', overflow: 'hidden' }}>
-          <GShape shape="circle" color="vermillion" style={{ left: -22, bottom: -22, width: 90, height: 90 }}/>
-          <div style={{ position: 'relative' }}>
-            <Eyebrow color="var(--cobalt)">Curator review</Eyebrow>
-            <Display size={32} style={{ marginTop: 6 }}>
-              <Em>{accepted.length}</Em>/{highlights.length} kept.
-            </Display>
-            <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
-              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                {['all', 'pending', 'accepted', 'rejected'].map((f) => (
-                  <button key={f} onClick={() => setFilter(f)}
-                    style={{
-                      fontFamily: 'var(--font-mono)', fontSize: 11,
-                      padding: '4px 10px', borderRadius: 999,
-                      border: '2px solid var(--ink)',
-                      background: filter === f ? 'var(--ink)' : 'var(--paper)',
-                      color: filter === f ? 'var(--paper)' : 'var(--ink)',
-                      cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.08em',
-                    }}>{f}</button>
-                ))}
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
-                <Btn full kind="vermil" icon="download" disabled={!allDecided} onClick={onSave}>Save highlights</Btn>
-                <Btn full kind="cadmium" icon="book" disabled={accepted.length === 0} onClick={onLift}>
-                  Lift {accepted.length} to anthology
-                </Btn>
-              </div>
-              <div style={{ marginTop: 14, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg-muted)' }}>
-                {allDecided ? 'all decisions made — ready to save' : `${pending.length} still pending`}
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div style={{ padding: 22, maxHeight: 480, overflowY: 'auto' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
-            <Eyebrow color="var(--vermillion)">Pass-2 spans</Eyebrow>
-            <span style={{ flex: 1, height: 2, background: 'var(--ink)' }}/>
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg-muted)' }}>
-              {visible.length} showing
-            </span>
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            {visible.map((hl) => (
-              <HlReviewCard key={hl.id} hl={hl} selected={selectedHl === hl.id}
-                onSelect={() => setSelectedHl(hl.id)}
-                onAccept={() => setStatus(hl.id, 'accepted')}
-                onReject={() => setStatus(hl.id, 'rejected')}
-                onUndo={() => setStatus(hl.id, 'pending')}/>
-            ))}
-            {visible.length === 0 && (
-              <div style={{ color: 'var(--fg-muted)', fontStyle: 'italic', padding: 20, textAlign: 'center' }}>
-                Nothing in this filter.
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-    </Card>
-  );
-}
-
-function HlReviewCard({ hl, selected, onSelect, onAccept, onReject, onUndo }) {
+  const hasSpan = !!(hl && span);
+  const status = hasSpan ? (span.status || 'pending') : null;
   const stateColor =
-    hl.status === 'accepted' ? 'var(--grass)' :
-    hl.status === 'rejected' ? 'var(--vermillion)' : 'var(--cobalt)';
+    status === 'accepted' ? 'var(--grass)' :
+    status === 'rejected' ? 'var(--vermillion)' :
+    status === 'pending'  ? 'var(--cobalt)' : 'var(--fg-muted)';
+  const totalSpans = hl?.spans?.length || 0;
+
   return (
-    <div onClick={onSelect}
-      style={{
-        position: 'relative', padding: '14px 16px',
-        border: '2px solid var(--ink)', borderRadius: 8,
-        background: selected ? 'var(--cadmium)' : 'var(--paper)',
-        boxShadow: selected ? '4px 4px 0 0 var(--vermillion)' : '3px 3px 0 0 var(--ink)',
-        cursor: 'pointer', transition: 'all 140ms var(--ease-snap)',
-        opacity: hl.status === 'rejected' ? 0.5 : 1,
-      }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
-          {hl.id}
-        </span>
-        <span style={{ width: 8, height: 8, borderRadius: '50%', background: stateColor, border: '1.5px solid var(--ink)' }}/>
-        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, color: stateColor, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
-          {hl.status}
-        </span>
+    <>
+      <div onClick={onClose}
+        style={{ position: 'fixed', inset: 0, background: 'rgba(18,12,6,0.25)', zIndex: 49 }}/>
+
+      <div
+        role="dialog"
+        aria-label={`Snippet ${snippetIdx} curator`}
+        style={{
+          position: 'fixed', right: 0, top: 0, bottom: 0,
+          width: 'min(520px, 100vw)',
+          background: 'var(--paper)', borderLeft: '2px solid var(--ink)',
+          zIndex: 50, display: 'flex', flexDirection: 'column',
+          boxShadow: '-10px 0 28px rgba(0,0,0,0.18)',
+          overflow: 'hidden',
+          animation: 'hl-drawer-in 240ms cubic-bezier(.34,1.4,.64,1)',
+        }}
+      >
+        <style>{`@keyframes hl-drawer-in { from { transform: translateX(100%); } to { transform: translateX(0); } }`}</style>
+
+        {/* Header */}
+        <div style={{ padding: '18px 22px 12px', borderBottom: '2px solid var(--ink)',
+          background: 'var(--paper-warm)', position: 'relative' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
+            <Eyebrow color="var(--cobalt)">{hasSpan ? 'Span editor' : 'Snippet'}</Eyebrow>
+            <span style={{ flex: 1 }}/>
+            <button onClick={onClose} aria-label="Close drawer"
+              style={{
+                width: 32, height: 32, borderRadius: '50%', border: '2px solid var(--ink)',
+                background: 'var(--paper)', cursor: 'pointer', display: 'inline-flex',
+                alignItems: 'center', justifyContent: 'center', padding: 0,
+              }}>
+              <Icon name="x" size={14}/>
+            </button>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
+            <Display size={26}>#{snippetIdx}</Display>
+            {snippet.speaker_name && (
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg-muted)' }}>
+                {snippet.speaker_name}
+              </span>
+            )}
+            {score != null && (
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg-muted)' }}>
+                score {score}/10
+              </span>
+            )}
+            {hasSpan && (
+              <>
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg-muted)' }}>
+                  · {hl.id} span {spanIdx + 1}/{totalSpans}
+                </span>
+                <span style={{ width: 8, height: 8, borderRadius: '50%', background: stateColor, border: '1.5px solid var(--ink)' }}/>
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: stateColor,
+                  textTransform: 'uppercase', letterSpacing: '0.08em' }}>{status}</span>
+              </>
+            )}
+          </div>
+          <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 10, fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--fg-muted)' }}>
+            <button onClick={onPrev} title="Previous snippet (k / ↑)" style={navBtnStyle}>↑ prev</button>
+            <button onClick={onNext} title="Next snippet (j / ↓)" style={navBtnStyle}>↓ next</button>
+            <span style={{ marginLeft: 'auto' }}>esc to close</span>
+          </div>
+        </div>
+
+        {/* Body */}
+        <div style={{ flex: 1, overflowY: 'auto', padding: '18px 22px' }}>
+          {/* Reasoning, when there's a Pass-2 highlight or a Pass-1 score */}
+          {(hl?.reasoning || reasoning) && (
+            <div style={{ background: 'var(--paper-warm)', border: '2px solid var(--ink)',
+              borderRadius: 8, padding: '12px 14px', marginBottom: 18, position: 'relative',
+              boxShadow: '3px 3px 0 0 var(--ink)' }}>
+              <Eyebrow color="var(--vermillion)" style={{ marginBottom: 6 }}>Why salient</Eyebrow>
+              <p style={{ marginTop: 6, fontSize: 13, lineHeight: 1.5, color: 'var(--ink)' }}>
+                {hl?.reasoning || reasoning}
+              </p>
+            </div>
+          )}
+
+          {/* Audio play */}
+          {audioSrc && (
+            <div style={{ marginBottom: 18, padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 10,
+              background: 'var(--paper)', border: '2px solid var(--ink)', borderRadius: 8 }}>
+              <button onClick={playSnippet} aria-label="Play snippet"
+                style={{ width: 32, height: 32, borderRadius: '50%', border: '2px solid var(--ink)',
+                  background: 'var(--ink)', color: 'var(--paper)', display: 'inline-flex',
+                  alignItems: 'center', justifyContent: 'center', cursor: 'pointer', padding: 0 }}>
+                <Icon name={playing ? 'pause' : 'play'} size={13} stroke="var(--paper)"/>
+              </button>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5, color: 'var(--fg-muted)' }}>
+                play this snippet · {fmtTime(snippet.audio_start_offset)}–{fmtTime(snippet.audio_end_offset)}
+              </span>
+              <audio ref={audioRef} src={audioSrc} preload="metadata"
+                onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)}
+                style={{ display: 'none' }}/>
+            </div>
+          )}
+
+          {/* Speaker label + transcript text (with mark when there's a span) */}
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, fontWeight: 700,
+            letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--fg-muted)', marginBottom: 8,
+            display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span>{snippet.speaker_name || 'Speaker'}</span>
+            <span style={{ opacity: 0.5 }}>· snippet #{snippetIdx} · {fmtTime(snippet.audio_start_offset)}</span>
+          </div>
+          <DrawerSnippetText sn={snippet} editedSpan={hasSpan ? editedSpan : null}/>
+          {hasSpan && editedSpan && (
+            <SpanRangeSlider
+              textLen={(snippet.transcript || '').length}
+              charStart={editedSpan.char_start}
+              charEnd={editedSpan.char_end}
+              onChange={(cs, ce) => onSpanEdit(cs, ce)}
+            />
+          )}
+          {!hasSpan && (
+            <div style={{ marginTop: 14, padding: '10px 12px', borderRadius: 6,
+              background: 'var(--bone)', border: '1.5px dashed var(--line-soft)',
+              fontFamily: 'var(--font-mono)', fontSize: 11.5, color: 'var(--fg-muted)' }}>
+              No proposed span here yet. Run highlight detection to generate spans you can accept or reject.
+            </div>
+          )}
+        </div>
+
+        {/* Footer — accept/reject only meaningful when there's a span */}
+        <div style={{
+          padding: '14px 22px', borderTop: '2px solid var(--ink)',
+          background: 'var(--paper-warm)',
+          display: 'flex', gap: 10, alignItems: 'center',
+        }}>
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--fg-muted)' }}>
+            j/k to cycle snippets
+          </span>
+          <span style={{ flex: 1 }}/>
+          <Btn kind="ghost" icon="x" onClick={onReject} disabled={!hasSpan}>Reject span</Btn>
+          <Btn kind="vermil" icon="check" onClick={onAccept} disabled={!hasSpan}>Accept span</Btn>
+        </div>
       </div>
-      <p style={{ fontFamily: 'var(--font-display)', fontSize: 18, lineHeight: 1.2, margin: 0, color: 'var(--ink)', textWrap: 'pretty' }}>
-        “{hl.full_text}”
-      </p>
-      <p style={{ marginTop: 8, fontSize: 12.5, lineHeight: 1.45, color: 'var(--fg-muted)' }}>
-        <b style={{ color: 'var(--ink)' }}>Why:</b> {hl.reasoning}
-      </p>
-      <div style={{ marginTop: 10, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-        {hl.status === 'pending' ? (
-          <>
-            <button onClick={(e) => { e.stopPropagation(); onAccept(); }} style={miniBtn('var(--grass)', 'var(--paper)')}>
-              <Icon name="check" size={12}/> accept
-            </button>
-            <button onClick={(e) => { e.stopPropagation(); onReject(); }} style={miniBtn('var(--paper)', 'var(--ink)')}>
-              <Icon name="x" size={12}/> reject
-            </button>
-          </>
-        ) : (
-          <button onClick={(e) => { e.stopPropagation(); onUndo(); }} style={miniBtn('var(--paper)', 'var(--ink)')}>undo</button>
-        )}
+    </>
+  );
+}
+
+const navBtnStyle = {
+  fontFamily: 'var(--font-mono)', fontSize: 10.5,
+  padding: '3px 8px', borderRadius: 999,
+  border: '1.5px solid var(--ink)',
+  background: 'var(--paper)', color: 'var(--ink)',
+  cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.08em',
+};
+
+function DrawerSnippetText({ sn, editedSpan }) {
+  const text = sn.transcript || '';
+  if (!editedSpan) {
+    return <p style={{ fontSize: 14.5, lineHeight: 1.6, color: 'var(--ink)', margin: 0, textWrap: 'pretty' }}>{text}</p>;
+  }
+  const cs = Math.max(0, Math.min(text.length, editedSpan.char_start));
+  const ce = Math.max(cs, Math.min(text.length, editedSpan.char_end));
+  const before = text.slice(0, cs);
+  const inner = text.slice(cs, ce);
+  const after = text.slice(ce);
+  return (
+    <p style={{ fontSize: 14.5, lineHeight: 1.6, color: 'var(--ink)', margin: 0, textWrap: 'pretty' }}>
+      {before}
+      <mark style={{ background: 'var(--cadmium)', padding: '1px 4px',
+        border: '2px solid var(--ink)', borderRadius: 4, boxShadow: '2px 2px 0 0 var(--ink)',
+        color: 'var(--ink)' }}>
+        {inner || ' '}
+      </mark>
+      {after}
+    </p>
+  );
+}
+
+function SpanRangeSlider({ textLen, charStart, charEnd, onChange }) {
+  const trackRef = useRef(null);
+  const valuesRef = useRef({ charStart, charEnd, textLen });
+  valuesRef.current = { charStart, charEnd, textLen };
+  const [active, setActive] = useState(null); // 'start' | 'end' | null
+
+  function startDrag(handle, e) {
+    e.preventDefault();
+    e.stopPropagation();
+    setActive(handle);
+
+    function move(ev) {
+      const r = trackRef.current?.getBoundingClientRect();
+      if (!r) return;
+      const t = Math.max(0, Math.min(1, (ev.clientX - r.left) / Math.max(1, r.width)));
+      const cur = valuesRef.current;
+      const c = Math.round(t * cur.textLen);
+      if (handle === 'start') {
+        onChange(Math.max(0, Math.min(c, cur.charEnd - 1)), cur.charEnd);
+      } else {
+        onChange(cur.charStart, Math.max(cur.charStart + 1, Math.min(cur.textLen, c)));
+      }
+    }
+    function up() {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      setActive(null);
+    }
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  }
+
+  const len = Math.max(1, textLen);
+  const leftPct = (charStart / len) * 100;
+  const rightPct = (charEnd / len) * 100;
+
+  return (
+    <div style={{ marginTop: 12 }}>
+      <div ref={trackRef}
+        style={{
+          position: 'relative', height: 26, padding: '11px 0',
+          touchAction: 'none', userSelect: 'none',
+        }}>
+        <div style={{ position: 'absolute', top: 12, left: 0, right: 0, height: 3,
+          background: 'var(--bone)', border: '1.5px solid var(--ink)', borderRadius: 2 }}/>
+        <div style={{
+          position: 'absolute', top: 11, left: `${leftPct}%`,
+          width: `${Math.max(0, rightPct - leftPct)}%`, height: 5,
+          background: 'var(--cadmium)', border: '1.5px solid var(--ink)', borderRadius: 2,
+        }}/>
+        <SliderHandle pct={leftPct} active={active === 'start'} onPointerDown={(e) => startDrag('start', e)}/>
+        <SliderHandle pct={rightPct} active={active === 'end'} onPointerDown={(e) => startDrag('end', e)}/>
+      </div>
+      <div style={{ marginTop: 4, display: 'flex', justifyContent: 'space-between',
+        fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--fg-muted)' }}>
+        <span>start {charStart}</span>
+        <span>{charEnd - charStart} chars</span>
+        <span>end {charEnd}</span>
       </div>
     </div>
   );
 }
 
-function LiftToAnthologyModal({ conversation, accepted, snippets, onClose, onDone, setError }) {
+function SliderHandle({ pct, active, onPointerDown }) {
+  return (
+    <div onPointerDown={onPointerDown}
+      style={{
+        position: 'absolute', top: 5, left: `${pct}%`,
+        width: 18, height: 18, marginLeft: -9,
+        borderRadius: '50%', background: active ? 'var(--vermillion)' : 'var(--paper)',
+        border: '2px solid var(--ink)',
+        boxShadow: active ? '3px 3px 0 0 var(--ink)' : '2px 2px 0 0 var(--ink)',
+        cursor: 'ew-resize', touchAction: 'none', zIndex: 2,
+      }}/>
+  );
+}
+
+// =====================================================================
+//  Lift-to-anthology modal (now span-level: one clip per accepted span)
+//  + running overlay
+// =====================================================================
+
+function LiftToAnthologyModal({ conversation, highlights, snippets, onClose, onDone, setError }) {
   const [mode, setMode] = useState('new');
   const [anthologies, setAnthologies] = useState([]);
   const [selectedAnth, setSelectedAnth] = useState('');
   const [name, setName] = useState(`Highlights from ${conversation.replace(/\.json$/, '')}`);
   const [sectionTitle, setSectionTitle] = useState(`From ${conversation.replace(/\.json$/, '')}`);
   const [busy, setBusy] = useState(false);
+
+  // Flatten all accepted spans across highlights — one clip per span.
+  const acceptedSpanRefs = [];
+  highlights.forEach((hl) => {
+    hl.spans?.forEach((sp) => {
+      if (sp.status === 'accepted') acceptedSpanRefs.push({ hl, sp });
+    });
+  });
 
   useEffect(() => {
     fetchAnthologies().then((list) => {
@@ -1331,7 +1513,7 @@ function LiftToAnthologyModal({ conversation, accepted, snippets, onClose, onDon
   async function commit() {
     setBusy(true);
     try {
-      const reg = await registerCorticoConversation(conversation);
+      const reg = await registerTranscriptConversation(conversation);
       const conversation_id = reg.conversation_id;
 
       let anthId;
@@ -1344,20 +1526,18 @@ function LiftToAnthologyModal({ conversation, accepted, snippets, onClose, onDon
       const sec = await upsertSection(anthId, { title: sectionTitle, intro: '' });
       const sectionId = sec.section_id;
 
-      for (const hl of accepted) {
-        const idxs = hl.spans.map((s) => s.snippet_index);
-        const first = snippets[Math.min(...idxs)];
-        const last = snippets[Math.max(...idxs)];
-        if (!first || !last) continue;
+      for (const { hl, sp } of acceptedSpanRefs) {
+        const sn = snippets[sp.snippet_index];
+        if (!sn) continue;
         await addClip({
           section_id: sectionId,
           conversation_id,
-          start_sec: first.audio_start_offset,
-          end_sec: last.audio_end_offset,
+          start_sec: sn.audio_start_offset,
+          end_sec: sn.audio_end_offset,
           tags: [],
           curator_note: hl.reasoning || '',
           source: 'pass2_span',
-          source_ref: hl.id,
+          source_ref: `${hl.id}#${sp.snippet_index}`,
         });
       }
       onDone();
@@ -1370,7 +1550,7 @@ function LiftToAnthologyModal({ conversation, accepted, snippets, onClose, onDon
   return (
     <Modal onClose={onClose} maxWidth={520}>
       <Eyebrow color="var(--cadmium)">Lift to anthology</Eyebrow>
-      <Display size={30} style={{ marginTop: 6 }}>{accepted.length} <Em>kept</Em>.</Display>
+      <Display size={30} style={{ marginTop: 6 }}>{acceptedSpanRefs.length} <Em>spans kept</Em>.</Display>
       <div style={{ marginTop: 18, display: 'flex', gap: 8 }}>
         <ModeBtn active={mode === 'new'} onClick={() => setMode('new')}>New anthology</ModeBtn>
         <ModeBtn active={mode === 'existing'} onClick={() => setMode('existing')} disabled={!anthologies.length}>
@@ -1401,8 +1581,8 @@ function LiftToAnthologyModal({ conversation, accepted, snippets, onClose, onDon
       </div>
       <div style={{ display: 'flex', gap: 10, marginTop: 22, justifyContent: 'flex-end' }}>
         <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-        <Btn kind="vermil" icon="book" onClick={commit} disabled={busy}>
-          {busy ? 'Lifting…' : `Lift ${accepted.length}`}
+        <Btn kind="vermil" icon="book" onClick={commit} disabled={busy || acceptedSpanRefs.length === 0}>
+          {busy ? 'Lifting…' : `Lift ${acceptedSpanRefs.length}`}
         </Btn>
       </div>
     </Modal>

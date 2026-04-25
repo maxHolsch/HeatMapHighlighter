@@ -1,10 +1,10 @@
 """
 SQLModel schema + session helpers for corpus, audio, vectors, and anthology state.
 
-The existing highlighter pipeline (transcript_processor.py) operates on raw
-Cortico JSON files on disk and does not use this DB at all. Everything new
-(audio ingestion, style/topic embeddings, cross-conversation queries,
-anthologies, clip state) lives here.
+The highlighter pipeline (transcript_processor.py) operates on transcript
+JSON files on disk and does not use this DB at all. Everything new (audio
+ingestion, style/topic embeddings, cross-conversation queries, anthologies,
+clip state) lives here.
 
 Per-corpus snippet style and topic embeddings are stored as numpy files
 (`data/vectors/<corpus_id>/{style,topic}.npy`), with DB rows pointing at
@@ -33,11 +33,12 @@ class Corpus(SQLModel, table=True):
 class Conversation(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     corpus_id: int = Field(foreign_key="corpus.id", index=True)
-    # Human-readable title (often the Cortico conversation-<id>).
+    # Human-readable title — typically the source audio's filename stem.
     title: str
-    # Cortico conversation identifier if this conversation was imported from JSON.
-    cortico_id: Optional[str] = Field(default=None, index=True)
-    # Path on disk of the original transcript JSON (Cortico) if any.
+    # Stable identifier for the source transcript JSON (file stem) if this
+    # conversation was imported from JSON rather than from raw audio.
+    transcript_id: Optional[str] = Field(default=None, index=True)
+    # Path on disk of the source transcript JSON if any.
     transcript_path: Optional[str] = None
     # Path on disk of the prepared 16kHz mono WAV if any.
     audio_path: Optional[str] = None
@@ -50,7 +51,7 @@ class Snippet(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     conversation_id: int = Field(foreign_key="conversation.id", index=True)
     # Index within the conversation's ordered snippet list (matches
-    # TranscriptProcessor.original_snippets index when Cortico-imported).
+    # TranscriptProcessor.original_snippets index when JSON-imported).
     idx: int
     start_sec: float
     end_sec: float

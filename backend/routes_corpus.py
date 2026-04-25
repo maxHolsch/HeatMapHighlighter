@@ -11,8 +11,8 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from sqlmodel import select
 
-from audio.pipeline import ensure_corpus, ingest_cortico_only
-from config import RAW_TRANSCRIPTS_DIR
+from audio.pipeline import ensure_corpus, ingest_transcript_only
+from config import TRANSCRIPTS_DIR, find_audio_for
 from db import Conversation, Corpus, Snippet, Word, session
 from encoders import style as style_enc
 from retrieval.explain import explain as explain_snippet
@@ -22,17 +22,17 @@ from retrieval.search import score_query, score_signature
 router = APIRouter(prefix="/api")
 
 
-@router.post("/cortico/{conversation_name}/register")
-def register_cortico_conversation(conversation_name: str):
+@router.post("/transcripts/{conversation_name}/register")
+def register_transcript_conversation(conversation_name: str):
     """
-    Register a Cortico transcript JSON as a DB Conversation so it can be
-    referenced by clips in an anthology even when there's no audio corpus.
-    Idempotent: if already registered in the default corpus, returns the id.
+    Register a transcript JSON as a DB Conversation so it can be referenced
+    by clips in an anthology even when there's no audio corpus. Idempotent:
+    if already registered in the default corpus, returns the id.
     """
-    transcript_path = RAW_TRANSCRIPTS_DIR / f"{conversation_name}.json"
+    transcript_path = TRANSCRIPTS_DIR / f"{conversation_name}.json"
     if not transcript_path.is_file():
-        raise HTTPException(status_code=404, detail=f"Cortico transcript not found at {transcript_path}")
-    corpus_id = ensure_corpus("cortico-default", source_root=str(RAW_TRANSCRIPTS_DIR))
+        raise HTTPException(status_code=404, detail=f"Transcript not found at {transcript_path}")
+    corpus_id = ensure_corpus("transcripts-default", source_root=str(TRANSCRIPTS_DIR))
     with session() as s:
         existing = s.exec(
             select(Conversation).where(
@@ -42,7 +42,7 @@ def register_cortico_conversation(conversation_name: str):
         ).first()
         if existing:
             return {"conversation_id": existing.id, "corpus_id": corpus_id}
-    conv_id = ingest_cortico_only(corpus_id, conversation_name, str(transcript_path))
+    conv_id = ingest_transcript_only(corpus_id, conversation_name, str(transcript_path))
     return {"conversation_id": conv_id, "corpus_id": corpus_id}
 
 
@@ -75,7 +75,7 @@ def list_conversations_in_corpus(corpus_id: int):
             {
                 "id": c.id,
                 "title": c.title,
-                "cortico_id": c.cortico_id,
+                "transcript_id": c.transcript_id,
                 "has_audio": bool(c.audio_path),
                 "duration_sec": c.duration_sec,
                 "num_snippets": c.num_snippets,
@@ -239,17 +239,42 @@ async def explain_route(snippet_id: int, request: Request):
 
 
 @router.get("/conversations/{conversation_id}/audio")
-def stream_audio(conversation_id: int, start: Optional[float] = Query(None), end: Optional[float] = Query(None)):
-    """Stream the full WAV, or an in-memory slice when start/end are provided."""
+def stream_audio(conversation_id: str, start: Optional[float] = Query(None), end: Optional[float] = Query(None)):
+    """Stream the full audio file, or an in-memory slice when start/end are provided.
+
+    `conversation_id` accepts either a numeric DB primary key (corpus-ingested
+    audio) OR a transcript stem (JSON-only highlighter conversations whose
+    audio lives in one of `AUDIO_DIRS`).
+    """
+    audio_path: Optional[str] = None
     with session() as s:
-        conv = s.get(Conversation, conversation_id)
-        if not conv or not conv.audio_path:
-            raise HTTPException(status_code=404, detail="Audio not available for this conversation")
-        audio_path = conv.audio_path
+        try:
+            db_id = int(conversation_id)
+        except ValueError:
+            db_id = None
+        if db_id is not None:
+            conv = s.get(Conversation, db_id)
+            if conv and conv.audio_path:
+                audio_path = conv.audio_path
+        if audio_path is None:
+            conv = s.exec(
+                select(Conversation).where(Conversation.title == conversation_id)
+            ).first()
+            if conv and conv.audio_path:
+                audio_path = conv.audio_path
+    if audio_path is None:
+        p = find_audio_for(conversation_id)
+        if p is not None:
+            audio_path = str(p)
+    if audio_path is None:
+        raise HTTPException(status_code=404, detail="Audio not available for this conversation")
+
+    media_type = "audio/mpeg" if audio_path.lower().endswith(".mp3") else "audio/wav"
+
     if start is None and end is None:
         if not Path(audio_path).is_file():
             raise HTTPException(status_code=404, detail="Audio file missing on disk")
-        return FileResponse(audio_path, media_type="audio/wav")
+        return FileResponse(audio_path, media_type=media_type)
 
     # Slice in memory and return.
     import io

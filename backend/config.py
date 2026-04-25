@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from typing import Optional
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -15,7 +16,33 @@ try:
 except ImportError:
     pass
 
-RAW_TRANSCRIPTS_DIR = BASE_DIR / "cortico_api_transcripts_json"
+TRANSCRIPTS_DIR = BASE_DIR / "transcripts_json"
+
+# Directories the backend will search for audio files matching a transcript
+# stem (`<stem>.mp3`/`.m4a`/`.wav`/...). The first hit wins. AUDIO_DIR (under
+# DATA_DIR) is added in ensure_data_dirs(); we list it last so an external
+# folder of source audio can take precedence.
+_DEFAULT_AUDIO_LOOKUPS = [
+    BASE_DIR.parent / "iq2_audio",
+    BASE_DIR / "iq2_audio",
+]
+AUDIO_DIRS = [Path(p) for p in os.environ.get("AUDIO_DIRS", "").split(":") if p] \
+    or _DEFAULT_AUDIO_LOOKUPS
+
+AUDIO_EXTS = (".mp3", ".m4a", ".wav", ".flac", ".ogg", ".aac")
+
+
+def find_audio_for(stem: str) -> "Optional[Path]":
+    """Locate an audio file by stem across AUDIO_DIRS + DATA/audio."""
+    candidates = list(AUDIO_DIRS) + [AUDIO_DIR]
+    for d in candidates:
+        if not d or not d.exists():
+            continue
+        for ext in AUDIO_EXTS:
+            p = d / f"{stem}{ext}"
+            if p.is_file():
+                return p
+    return None
 
 HIGHLIGHT_CACHE_DIR = BASE_DIR / "highlight_cache"
 

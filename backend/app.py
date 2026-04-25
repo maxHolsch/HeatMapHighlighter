@@ -34,7 +34,7 @@ from pricing import (  # noqa: E402
     track_costs,
 )
 from transcript_processor import (  # noqa: E402
-    list_conversations, load_conversation,
+    list_conversations, load_conversation, transcript_hash,
 )
 from prompt_builder import (  # noqa: E402
     build_full_prompt, build_preview_prompt,
@@ -80,13 +80,20 @@ app.add_middleware(
 app.include_router(corpus_router)
 app.include_router(anthology_router)
 
-_conversation_cache: dict = {}
+_conversation_cache: dict = {}  # {conv_id: (mtime_or_None, payload)}
 
 
 def _get_conversation(conversation_id: str) -> dict:
-    if conversation_id not in _conversation_cache:
-        _conversation_cache[conversation_id] = load_conversation(conversation_id)
-    return _conversation_cache[conversation_id]
+    """In-process cache keyed on JSON mtime so re-transcribing invalidates it."""
+    from config import TRANSCRIPTS_DIR  # local import; config already loaded
+    raw_path = TRANSCRIPTS_DIR / f"{conversation_id}.json"
+    cur_mtime = raw_path.stat().st_mtime if raw_path.exists() else None
+    cached = _conversation_cache.get(conversation_id)
+    if cached and cached[0] == cur_mtime:
+        return cached[1]
+    payload = load_conversation(conversation_id)
+    _conversation_cache[conversation_id] = (cur_mtime, payload)
+    return payload
 
 
 # ------------------------------------------------------------------
@@ -124,6 +131,17 @@ def api_get_prediction(conversation_id: str, filename: str):
         raw_predictions = load_prediction_file(conversation_id, filename)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+    cur_hash = transcript_hash(conv_data["original_snippets"])
+    cached_hash = raw_predictions.get("transcript_hash")
+    if cached_hash != cur_hash:
+        raise HTTPException(
+            status_code=410,
+            detail=(
+                "Cached predictions are stale: they were generated against a "
+                "different version of this transcript. Re-run highlight detection."
+            ),
+        )
 
     scores_list = raw_predictions.get("paragraph_scores", [])
     original_scores = unmerge_scores(
@@ -347,6 +365,7 @@ async def api_detect_highlights_e2e(conversation_id: str, request: Request):
 
     merged = conv_data["merged_snippets"]
     original_snippets = conv_data["original_snippets"]
+    cur_hash = transcript_hash(original_snippets)
     full_prompt = build_modular_prompt(
         highlight_def, conv_context, theme_cond, merged,
     )
@@ -359,6 +378,7 @@ async def api_detect_highlights_e2e(conversation_id: str, request: Request):
             raise HTTPException(status_code=502, detail=f"Anthropic API error (pass 1): {e}")
 
         ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        raw_scores["transcript_hash"] = cur_hash
         scores_filename = save_predictions(conversation_id, raw_scores, ts=ts)
 
         scores_list = raw_scores.get("paragraph_scores", [])
@@ -405,6 +425,7 @@ async def api_detect_highlights_e2e(conversation_id: str, request: Request):
             "source_predictions_file": scores_filename,
             "threshold": threshold,
             "highlights": highlights,
+            "transcript_hash": cur_hash,
         }
         span_filename = save_span_predictions(conversation_id, span_payload, ts=ts)
 
@@ -498,6 +519,21 @@ def api_get_span_prediction(conversation_id: str, filename: str):
         data = load_span_prediction_file(conversation_id, filename)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+    try:
+        conv_data = _get_conversation(conversation_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    cur_hash = transcript_hash(conv_data["original_snippets"])
+    cached_hash = data.get("transcript_hash")
+    if cached_hash != cur_hash:
+        raise HTTPException(
+            status_code=410,
+            detail=(
+                "Cached span predictions are stale: they were generated against a "
+                "different version of this transcript. Re-run highlight detection."
+            ),
+        )
     return data
 
 

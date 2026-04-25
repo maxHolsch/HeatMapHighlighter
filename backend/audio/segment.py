@@ -1,12 +1,22 @@
 """
-Shape Whisper segments into snippets targeting 3-15 seconds, carrying
-word-level timestamps through for karaoke export and later audio cuts.
+Shape ASR segments into snippets.
+
+Two modes:
+
+- **Speaker-bounded passthrough**: when every segment carries a `speaker`
+  label (i.e. diarized output from AssemblyAI utterances), each segment
+  becomes one snippet 1:1. Speaker turns are the natural unit, so we
+  preserve them rather than re-chunking.
+
+- **Time-bounded re-chunk**: when speakers are absent (faster-whisper),
+  merge short consecutive segments and split long ones at sentence
+  boundaries to target 3–15 seconds per snippet.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional
 
 from .asr import AsrSegment, AsrWord
 
@@ -20,14 +30,42 @@ class SnippetOut:
     end: float
     text: str
     words: List[AsrWord]
+    speaker: Optional[str] = None
 
 
 def snippets_from_segments(segments: List[AsrSegment]) -> List[SnippetOut]:
-    """
-    Merge short Whisper segments (<MIN_SEC) with their neighbors and split
-    long ones (>MAX_SEC) on sentence boundaries (word-level).
-    """
-    # Step 1: merge short-consecutive segments.
+    if not segments:
+        return []
+
+    if all(s.speaker for s in segments):
+        # AssemblyAI splits a single speaker turn into multiple utterances when
+        # there's a long silence inside the turn. Collapse consecutive
+        # same-speaker utterances back into one snippet so each snippet is a
+        # true speaker turn.
+        out: List[SnippetOut] = []
+        for seg in segments:
+            if not (seg.words or seg.text):
+                continue
+            if out and out[-1].speaker == seg.speaker:
+                prev = out[-1]
+                joined = (prev.text + " " + seg.text).strip() if prev.text and seg.text else (prev.text or seg.text)
+                out[-1] = SnippetOut(
+                    start=prev.start,
+                    end=seg.end,
+                    text=joined,
+                    words=list(prev.words) + list(seg.words),
+                    speaker=prev.speaker,
+                )
+            else:
+                out.append(SnippetOut(
+                    start=seg.start,
+                    end=seg.end,
+                    text=seg.text,
+                    words=list(seg.words),
+                    speaker=seg.speaker,
+                ))
+        return out
+
     merged: List[SnippetOut] = []
     buf_words: List[AsrWord] = []
     buf_start: float = 0.0
@@ -45,7 +83,6 @@ def snippets_from_segments(segments: List[AsrSegment]) -> List[SnippetOut]:
 
     for seg in segments:
         if not seg.words:
-            # Synthesize a single pseudo-word.
             words = [AsrWord(start=seg.start, end=seg.end, text=seg.text)]
         else:
             words = seg.words
@@ -62,7 +99,6 @@ def snippets_from_segments(segments: List[AsrSegment]) -> List[SnippetOut]:
             buf_words = list(words)
     flush()
 
-    # Step 2: split long snippets at sentence endings (., ?, !).
     out: List[SnippetOut] = []
     for snip in merged:
         if snip.end - snip.start <= MAX_SEC:

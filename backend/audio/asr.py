@@ -39,6 +39,10 @@ class AsrSegment:
     end: float
     text: str
     words: List[AsrWord]
+    # Speaker label when the provider does diarization (AssemblyAI returns
+    # short codes like "A", "B", ...). None when the provider doesn't
+    # diarize (faster-whisper).
+    speaker: Optional[str] = None
 
 
 def transcribe(audio_path: str, language: Optional[str] = None) -> List[AsrSegment]:

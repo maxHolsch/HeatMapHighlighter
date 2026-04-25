@@ -1,29 +1,28 @@
 """
-AssemblyAI backend: upload audio, poll for a transcript, return AsrSegments.
+AssemblyAI ASR backend using the official Python SDK.
 
-We use the REST API directly (no SDK) so the only dep is `requests`.
-AssemblyAI accepts MP3/M4A/WAV directly, so we upload the *original*
-audio file (not the resampled WAV), which is both faster to upload
-(smaller) and avoids any transcoding artifacts.
+The SDK auto-handles file upload + polling, so the previous raw-REST
+implementation has been replaced by a thin wrapper. Output shape matches
+the faster-whisper path: a list of `AsrSegment`s with word-level
+timestamps. With `speaker_labels=True`, each segment carries the
+speaker label from AssemblyAI's diarization (one segment per utterance).
 
-Returns segments shaped the same as the faster-whisper path: each
-segment contains word-level timestamps.
+Diarization quality is improved by `speaker_options` — see
+https://www.assemblyai.com/docs/pre-recorded-audio/label-speakers.
+The bounds default to 2..6 (typical podcast range) and can be overridden
+via `ASSEMBLYAI_MIN_SPEAKERS` / `ASSEMBLYAI_MAX_SPEAKERS` env vars.
 """
 
 from __future__ import annotations
 
 import os
-import time
 from typing import List, Optional
-
-import requests
 
 from .asr import AsrSegment, AsrWord
 
 
-API_BASE = "https://api.assemblyai.com/v2"
-POLL_INTERVAL_SEC = 3.0
-MAX_POLL_SECONDS = 3600  # give up after an hour
+def _ms(v) -> float:
+    return float(v) / 1000.0 if v is not None else 0.0
 
 
 def _key() -> str:
@@ -36,98 +35,68 @@ def _key() -> str:
     return k
 
 
-def _upload(path: str) -> str:
-    headers = {"authorization": _key()}
-    with open(path, "rb") as f:
-        resp = requests.post(
-            f"{API_BASE}/upload",
-            headers=headers,
-            data=f,
-            timeout=600,
-        )
-    resp.raise_for_status()
-    return resp.json()["upload_url"]
-
-
-def _submit(upload_url: str, language: Optional[str]) -> str:
-    headers = {"authorization": _key(), "content-type": "application/json"}
-    body = {
-        "audio_url": upload_url,
-        "speech_models": ["universal-3-pro"],
-        "speaker_labels": True,
-    }
-    if language:
-        body["language_code"] = language
-    resp = requests.post(f"{API_BASE}/transcript", headers=headers, json=body, timeout=60)
-    if resp.status_code >= 400:
-        # Surface AssemblyAI's actual error message; their response body is
-        # the only way to know which parameter they rejected.
-        raise RuntimeError(
-            f"AssemblyAI submit failed ({resp.status_code}): {resp.text}"
-        )
-    return resp.json()["id"]
-
-
-def _poll(transcript_id: str) -> dict:
-    headers = {"authorization": _key()}
-    waited = 0.0
-    while waited < MAX_POLL_SECONDS:
-        resp = requests.get(f"{API_BASE}/transcript/{transcript_id}", headers=headers, timeout=60)
-        resp.raise_for_status()
-        data = resp.json()
-        status = data.get("status")
-        if status == "completed":
-            return data
-        if status == "error":
-            raise RuntimeError(f"AssemblyAI transcription failed: {data.get('error')}")
-        time.sleep(POLL_INTERVAL_SEC)
-        waited += POLL_INTERVAL_SEC
-    raise RuntimeError("AssemblyAI transcription timed out")
+def _speaker_bounds() -> tuple[int, int]:
+    return (
+        int(os.environ.get("ASSEMBLYAI_MIN_SPEAKERS", "2")),
+        int(os.environ.get("ASSEMBLYAI_MAX_SPEAKERS", "6")),
+    )
 
 
 def transcribe(audio_path: str, language: Optional[str] = None) -> List[AsrSegment]:
-    print(f"  [asr=assemblyai] uploading {os.path.basename(audio_path)}...", flush=True)
-    upload_url = _upload(audio_path)
-    print("  [asr=assemblyai] submitting transcription job...", flush=True)
-    tid = _submit(upload_url, language)
-    print(f"  [asr=assemblyai] polling transcript {tid}...", flush=True)
-    data = _poll(tid)
+    import assemblyai as aai
 
-    words = data.get("words") or []
-    utterances = data.get("utterances") or []
+    aai.settings.api_key = _key()
 
-    def _ms(v):
-        return float(v) / 1000.0 if v is not None else 0.0
+    min_sp, max_sp = _speaker_bounds()
+    config_kwargs = dict(
+        speech_model=aai.SpeechModel.universal,
+        speaker_labels=True,
+        speaker_options=aai.SpeakerOptions(
+            min_speakers_expected=min_sp,
+            max_speakers_expected=max_sp,
+        ),
+    )
+    if language:
+        config_kwargs["language_code"] = language
 
-    def _mk_word(w) -> AsrWord:
-        return AsrWord(
-            start=_ms(w.get("start")),
-            end=_ms(w.get("end")),
-            text=(w.get("text") or "").strip(),
-        )
+    config = aai.TranscriptionConfig(**config_kwargs)
 
-    # Prefer speaker-bounded utterances as segments; fall back to one big
-    # segment of all words (segment.py splits on sentence boundaries + 15s cap).
+    print(f"  [asr=assemblyai] transcribing {os.path.basename(audio_path)}…", flush=True)
+    transcript = aai.Transcriber(config=config).transcribe(audio_path)
+
+    if transcript.status == aai.TranscriptStatus.error:
+        raise RuntimeError(f"AssemblyAI transcription failed: {transcript.error}")
+
+    out: List[AsrSegment] = []
+    utterances = transcript.utterances or []
     if utterances:
-        out: List[AsrSegment] = []
         for u in utterances:
-            u_words = [_mk_word(w) for w in (u.get("words") or [])]
-            if not u_words:
+            words = [
+                AsrWord(start=_ms(w.start), end=_ms(w.end), text=(w.text or "").strip())
+                for w in (u.words or [])
+            ]
+            if not words:
                 continue
             out.append(AsrSegment(
-                start=_ms(u.get("start")),
-                end=_ms(u.get("end")),
-                text=(u.get("text") or "").strip(),
-                words=u_words,
+                start=_ms(u.start),
+                end=_ms(u.end),
+                text=(u.text or "").strip(),
+                words=words,
+                speaker=u.speaker,
             ))
         return out
 
-    all_words = [_mk_word(w) for w in words]
+    # Fallback: no utterances returned (rare). Emit one big segment of all words.
+    all_words = [
+        AsrWord(start=_ms(w.start), end=_ms(w.end), text=(w.text or "").strip())
+        for w in (transcript.words or [])
+    ]
     if not all_words:
         return []
     return [AsrSegment(
         start=all_words[0].start,
         end=all_words[-1].end,
-        text=data.get("text", ""),
+        text=transcript.text or "",
         words=all_words,
+        speaker=None,
     )]
