@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { SCRIBBLE_RECT_PATH, SCRIBBLE_RECT_VIEWBOX } from './scribbleRectPath';
 
 export function Icon({ name, size = 18, stroke = 'currentColor', strokeWidth = 2, style }) {
   const props = { width: size, height: size, viewBox: '0 0 24 24', fill: 'none',
@@ -203,9 +204,25 @@ export function ScribbleBlob({ seed, fill, stroke, strokeWidth = 2, style }) {
   );
 }
 
+// Hand-drawn scribbled rectangle: many overlapping wobbly outlines that read as
+// Hand-traced scribble rectangle — vectorized from the source PNG via potrace.
+// The path is a filled silhouette of the white pen marks, so we render it with
+// `fill={stroke}` (no stroke). It stretches across the button via
+// preserveAspectRatio="none".
+export function ScribbleRect({ seed: _seed, stroke = 'var(--ink)', style }) {
+  return (
+    <svg viewBox={SCRIBBLE_RECT_VIEWBOX} preserveAspectRatio="none"
+      style={{ display: 'block', overflow: 'visible', ...style }}>
+      <g transform="translate(0,308) scale(0.1,-0.1)" fill={stroke} stroke="none" fillRule="evenodd">
+        <path d={SCRIBBLE_RECT_PATH} />
+      </g>
+    </svg>
+  );
+}
+
 export function Btn({ children, kind = 'ink', size = 'md', onClick, icon, disabled, type, full, style: extra }) {
   const colors = {
-    ink: { bg: 'var(--ink)', fg: 'var(--paper)' },
+    ink: { bg: 'transparent', fg: 'var(--ink)' },
     cobalt: { bg: 'var(--cobalt)', fg: 'var(--paper)' },
     cadmium: { bg: 'var(--cadmium)', fg: 'var(--ink)' },
     vermil: { bg: 'var(--vermillion)', fg: 'var(--paper)' },
@@ -225,7 +242,8 @@ export function Btn({ children, kind = 'ink', size = 'md', onClick, icon, disabl
   const seedKey = `${kind}-${size}-${(typeof children === 'string' ? children : icon || 'x').slice(0,12)}`;
 
   const offset = active ? 1 : (hover ? sz.shadowDx + 1 : sz.shadowDx);
-  const shadowVisible = kind !== 'ghost';
+  const isInk = kind === 'ink';
+  const shadowVisible = kind !== 'ghost' && !isInk;
 
   return (
     <button onClick={onClick} disabled={disabled} type={type}
@@ -254,8 +272,13 @@ export function Btn({ children, kind = 'ink', size = 'md', onClick, icon, disabl
             style={{ position: 'absolute', inset: 0, transform: `translate(${offset}px, ${offset}px)`, zIndex: 0,
               transition: 'transform 140ms var(--ease-snap)', pointerEvents: 'none' }}/>
         )}
-        <ScribbleBlob seed={seedKey} fill={colors.bg} stroke="var(--ink)" strokeWidth={2.2}
-          style={{ position: 'absolute', inset: 0, zIndex: 1, pointerEvents: 'none' }}/>
+        {isInk ? (
+          <ScribbleRect seed={seedKey} stroke="var(--ink)"
+            style={{ position: 'absolute', inset: 0, zIndex: 1, pointerEvents: 'none' }}/>
+        ) : (
+          <ScribbleBlob seed={seedKey} fill={colors.bg} stroke="var(--ink)" strokeWidth={2.2}
+            style={{ position: 'absolute', inset: 0, zIndex: 1, pointerEvents: 'none' }}/>
+        )}
         <span style={{ position: 'relative', zIndex: 2, display: 'inline-flex', alignItems: 'center', gap: 8 }}>
           {icon && <Icon name={icon} size={14}/>}
           {children}
@@ -314,19 +337,164 @@ export function Em({ children, color = 'var(--vermillion)' }) {
   return <em style={{ fontStyle: 'italic', color, fontWeight: 400 }}>{children}</em>;
 }
 
-export function Card({ children, style = {}, padding = 22, shadow = 'var(--sh-print)', bg = 'var(--paper)', radius = 10, withGrain = true }) {
+function getIsoShadowSpec(shadow) {
+  if (!shadow || shadow === 'none') return null;
+  if (shadow === 'var(--sh-print)') return { dx: 4, dy: 4, color: 'var(--ink)' };
+  if (shadow === 'var(--sh-print-cobalt)') return { dx: 6, dy: 6, color: 'var(--cobalt)' };
+  if (shadow === 'var(--sh-print-vermil)') return { dx: 6, dy: 6, color: 'var(--vermillion)' };
+
+  const offsetMatch = String(shadow).match(/(-?\d+(?:\.\d+)?)px\s+(-?\d+(?:\.\d+)?)px/);
+  const colorMatches = String(shadow).match(/var\(--[^)]+\)|#[0-9a-fA-F]{3,8}|rgba?\([^)]+\)/g);
+  return {
+    dx: offsetMatch ? Math.abs(Number(offsetMatch[1])) : 4,
+    dy: offsetMatch ? Math.abs(Number(offsetMatch[2])) : 4,
+    color: colorMatches?.at(-1) || 'var(--ink)',
+  };
+}
+
+// Hand-derived isometric extrusion for a rounded rectangle.
+//
+// For a rounded rect (W × H, corner radius r) extruded by depth (dx, dy),
+// a boundary point with outward normal n is back-visible iff n·(dx,dy) > 0.
+//   • Right edge n=(+1,0): back-visible when dx>0
+//   • Bottom edge n=(0,+1): back-visible when dy>0
+//   • BR corner sweeps n from (+1,0) to (0,+1) — fully back-visible
+//   • TR corner: boundary at θ_tr = atan2(-dx, dy)  (visible from θ_tr → 0)
+//   • BL corner: boundary at θ_bl = π - atan2(dx, dy)  (visible from π/2 → θ_bl)
+// The two boundary points are the cube's silhouette tangents; the back outline
+// is the front silhouette translated by (dx, dy); the depth edges connect
+// matched pairs of silhouette + corner-transition points.
+function IsoDepthLines({ dx = 0, dy = 0, color = 'var(--ink)', borderColor = 'var(--ink)', radius = 10 }) {
+  const ref = useRef(null);
+  const [size, setSize] = useState({ w: 0, h: 0 });
+
+  useEffect(() => {
+    const parent = ref.current?.parentElement;
+    if (!parent) return;
+    const ro = new ResizeObserver((entries) => {
+      const e = entries[0];
+      const box = e.borderBoxSize?.[0];
+      const w = box ? box.inlineSize : e.contentRect.width;
+      const h = box ? box.blockSize : e.contentRect.height;
+      if (w && h) setSize({ w: Math.round(w), h: Math.round(h) });
+    });
+    ro.observe(parent);
+    return () => ro.disconnect();
+  }, []);
+
+  const W = size.w, H = size.h;
+  if (W < 4 || H < 4) {
+    return <span ref={ref} aria-hidden style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }} />;
+  }
+
+  const r = Math.max(0, Math.min(radius, W / 2, H / 2));
+  const hasDepth = dx > 0 || dy > 0;
+
+  // Front rounded-rect outline. Stroke is centered on the path, so insetting
+  // by 1px keeps the visible line within the section's 2px transparent border
+  // — geometry stays identical to the previous CSS border.
+  const frontD = [
+    `M ${r} 1`,
+    `L ${W - r} 1`,
+    `A ${r - 1} ${r - 1} 0 0 1 ${W - 1} ${r}`,
+    `L ${W - 1} ${H - r}`,
+    `A ${r - 1} ${r - 1} 0 0 1 ${W - r} ${H - 1}`,
+    `L ${r} ${H - 1}`,
+    `A ${r - 1} ${r - 1} 0 0 1 1 ${H - r}`,
+    `L 1 ${r}`,
+    `A ${r - 1} ${r - 1} 0 0 1 ${r} 1`,
+    `Z`,
+  ].join(' ');
+
+  let backD = null;
+  let depthPoints = [];
+  if (hasDepth) {
+    // n·(dx,dy) > 0 ⇒ back-visible. TR/BL corners split at:
+    //   θ_tr = atan2(-dx, dy),   θ_bl = π - atan2(dx, dy).
+    const theta_tr = Math.atan2(-dx, dy);
+    const theta_bl = Math.PI - Math.atan2(dx, dy);
+    const trTangent = [W - r + r * Math.cos(theta_tr), r + r * Math.sin(theta_tr)];
+    const blTangent = [r + r * Math.cos(theta_bl), H - r + r * Math.sin(theta_bl)];
+    backD = [
+      `M ${(trTangent[0] + dx).toFixed(2)} ${(trTangent[1] + dy).toFixed(2)}`,
+      `A ${r} ${r} 0 0 1 ${(W + dx).toFixed(2)} ${(r + dy).toFixed(2)}`,
+      `L ${(W + dx).toFixed(2)} ${(H - r + dy).toFixed(2)}`,
+      `A ${r} ${r} 0 0 1 ${(W - r + dx).toFixed(2)} ${(H + dy).toFixed(2)}`,
+      `L ${(r + dx).toFixed(2)} ${(H + dy).toFixed(2)}`,
+      `A ${r} ${r} 0 0 1 ${(blTangent[0] + dx).toFixed(2)} ${(blTangent[1] + dy).toFixed(2)}`,
+    ].join(' ');
+    const brExtreme = [W - r + r * Math.SQRT1_2, H - r + r * Math.SQRT1_2];
+    depthPoints = [trTangent, [W, r], brExtreme, [W - r, H], blTangent];
+  }
+
+  const padPx = (hasDepth ? Math.max(dx, dy) : 0) + 6;
+  const baseSeed = (W + H + dx + dy) % 97;
+  const colorKey = String(color).replace(/[^a-zA-Z0-9]/g, '');
+  const filterId = `iso-grain-${W}-${H}-${dx}-${dy}-${colorKey}`;
+
   return (
-    <section style={{
-      background: bg, border: '2px solid var(--ink)', borderRadius: radius,
-      padding, position: 'relative', boxShadow: shadow, overflow: 'hidden',
-      ...style,
-    }}>
-      {withGrain && (
-        <div style={{ position: 'absolute', inset: 0, backgroundImage: 'var(--grain-svg)',
-          backgroundSize: '380px 380px', mixBlendMode: 'multiply', opacity: 0.08, pointerEvents: 'none' }}/>
-      )}
-      <div style={{ position: 'relative' }}>{children}</div>
-    </section>
+    <span ref={ref} aria-hidden style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
+      <svg
+        width={W + padPx}
+        height={H + padPx}
+        viewBox={`-3 -3 ${W + padPx + 3} ${H + padPx + 3}`}
+        style={{ position: 'absolute', top: -3, left: -3, overflow: 'visible', pointerEvents: 'none' }}
+      >
+        <defs>
+          {/* Same recipe as HandFrame's rough filter so iso lines + the card
+              outline pick up the same paper grain as form borders. */}
+          <filter id={filterId} x="-10%" y="-30%" width="120%" height="160%">
+            <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" seed={baseSeed} />
+            <feDisplacementMap in="SourceGraphic" scale="1.4" />
+          </filter>
+        </defs>
+        <g fill="none" strokeLinecap="round" strokeLinejoin="round" filter={`url(#${filterId})`}>
+          {hasDepth && (
+            <g stroke={color} strokeWidth="1.6" opacity="0.92">
+              <path d={backD} />
+              {depthPoints.map((p, i) => (
+                <line key={i}
+                  x1={p[0].toFixed(2)} y1={p[1].toFixed(2)}
+                  x2={(p[0] + dx).toFixed(2)} y2={(p[1] + dy).toFixed(2)} />
+              ))}
+            </g>
+          )}
+          {/* Single-pass front outline: same width and color as the previous
+              CSS border (2px solid var(--ink)), filtered for matching grain. */}
+          <path d={frontD} stroke={borderColor} strokeWidth="2" />
+        </g>
+      </svg>
+    </span>
+  );
+}
+
+export function Card({ children, style = {}, padding = 22, shadow = 'var(--sh-print)', bg = 'var(--paper)', radius = 10, withGrain = true }) {
+  const isoShadow = getIsoShadowSpec(shadow);
+  return (
+    <div style={{ position: 'relative' }}>
+      <section style={{
+        background: bg, border: '2px solid transparent', borderRadius: radius,
+        padding, position: 'relative', overflow: 'hidden',
+        ...style,
+      }}>
+        {withGrain && (
+          <div style={{ position: 'absolute', inset: 0, backgroundImage: 'var(--grain-svg)',
+            backgroundSize: '380px 380px', mixBlendMode: 'multiply', opacity: 0.08, pointerEvents: 'none' }}/>
+        )}
+        <div style={{ position: 'relative', zIndex: 1 }}>{children}</div>
+      </section>
+      {/* Rendered AFTER the section so the front border draws on top of the
+          section's background instead of being covered by it. The back iso
+          lines are positioned outside the section's box, so paint order
+          doesn't matter for them. */}
+      <IsoDepthLines
+        dx={isoShadow?.dx || 0}
+        dy={isoShadow?.dy || 0}
+        color={isoShadow?.color || 'var(--ink)'}
+        borderColor="var(--ink)"
+        radius={radius}
+      />
+    </div>
   );
 }
 
