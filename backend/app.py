@@ -3,6 +3,7 @@ FastAPI backend for the interactive conversation highlighting tool.
 """
 
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -538,4 +539,5 @@ def api_get_span_prediction(conversation_id: str, filename: str):
 
 
 if __name__ == "__main__":
-    uvicorn.run("app:app", host="0.0.0.0", port=5000, reload=True)
+    port = int(os.environ.get("PORT", "3001"))
+    uvicorn.run("app:app", host="0.0.0.0", port=port, reload=True)

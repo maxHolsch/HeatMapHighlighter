@@ -280,7 +280,8 @@ export function Btn({ children, kind = 'ink', size = 'md', onClick, icon, disabl
         {shadowVisible && (
           <ScribbleBlob seed={seedKey + '-sh'} fill="var(--ink)" stroke="none"
             style={{ position: 'absolute', inset: 0, transform: shadowTransform, zIndex: 0,
-              transition: 'transform 140ms var(--ease-snap)', pointerEvents: 'none' }}/>
+              transition: 'transform 140ms var(--ease-snap)', pointerEvents: 'none',
+              paddingTop: 10, paddingBottom: 10 }}/>
         )}
         {isInk ? (
           <ScribbleRect seed={seedKey} stroke="var(--ink)"
@@ -288,11 +289,12 @@ export function Btn({ children, kind = 'ink', size = 'md', onClick, icon, disabl
               paddingTop: 23, paddingBottom: 23 }}/>
         ) : isInkCobalt ? (
           <ScribbleBlob seed={seedKey} fill="var(--cobalt)" stroke="var(--ink)" strokeWidth={2.2}
-            style={{ position: 'absolute', inset: 0, zIndex: 1, pointerEvents: 'none', transform: inkCobaltBlobTransform, paddingTop: 1, paddingBottom: 1 }}/>
+            style={{ position: 'absolute', inset: 0, zIndex: 1, pointerEvents: 'none', transform: inkCobaltBlobTransform, paddingTop: 17, paddingBottom: 17 }}/>
         ) : (
           <ScribbleBlob seed={seedKey} fill={colors.bg} stroke="var(--ink)" strokeWidth={2.2}
             style={{
               position: 'absolute', inset: 0, zIndex: 1, pointerEvents: 'none', transform: frameTransform,
+              ...(kind === 'ghost' ? { marginTop: 10, marginBottom: 10 } : {}),
             }}/>
         )}
         <span style={{ position: 'relative', zIndex: 2, display: 'inline-flex', alignItems: 'center', gap: 8, paddingTop: isInkCobalt ? 0 : 9, paddingBottom: isInkCobalt ? 0 : 9, ...contentStyle }}>
