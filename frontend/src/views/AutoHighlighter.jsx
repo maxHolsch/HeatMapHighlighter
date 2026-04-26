@@ -470,7 +470,6 @@ export default function AutoHighlighter({ tweaks }) {
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
               <Eyebrow color="var(--cobalt)">The prompt</Eyebrow>
               <span style={{ flex: 1, height: 2, background: 'var(--ink)' }}/>
-              <Badge kind="ink" size="sm" dot>Modular</Badge>
             </div>
 
             {corpora.length > 1 && (
@@ -556,7 +555,7 @@ export default function AutoHighlighter({ tweaks }) {
             <Display size={42} style={{ marginTop: 8 }}>Press <Em color="var(--cobalt)">run</Em> to begin.</Display>
             <div style={{ marginTop: 18, display: 'flex', gap: 10, justifyContent: 'center' }}>
               <Btn kind="ghost" onClick={loadCachedRun} disabled={!conv}>Load cached run</Btn>
-              <Btn kind="ink" icon="wand" onClick={openRunModal} disabled={!conv}>Run highlight detection</Btn>
+              <Btn kind="ink-cobalt" icon="wand" onClick={openRunModal} disabled={!conv}>Run highlight detection</Btn>
             </div>
           </div>
         </Card>
@@ -647,7 +646,7 @@ export default function AutoHighlighter({ tweaks }) {
           </div>
 
           <div style={{ display: 'flex', gap: 10, marginTop: 22, justifyContent: 'flex-end' }}>
-            <Btn kind="ghost" onClick={() => setShowRunModal(false)}>Cancel</Btn>
+            <Btn kind="ghost" style={{ marginTop: 8 }} onClick={() => setShowRunModal(false)}>Cancel</Btn>
             <Btn kind="vermil" icon="wand" onClick={runPipeline}>Run it</Btn>
           </div>
         </Modal>
@@ -945,7 +944,7 @@ function FanHeatmap({
             </div>
           ) : (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-              <Badge kind="info">{totalSnippets} snippets</Badge>
+              <Badge kind="btn-ink">{totalSnippets} SNIPPETS</Badge>
               <Badge kind="warn">{hot} ≥ {threshold}</Badge>
             </div>
           )}

@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import Sidebar from './components/Sidebar';
 import AutoHighlighter from './views/AutoHighlighter';
-import CorpusHeatmap from './views/CorpusHeatmap';
+import CorpusHeatmap from './views/CorpusHeatMap';
 import AnthologyWorkspace from './views/AnthologyWorkspace';
 
 const FIXED_TWEAKS = { threshold: 5 };

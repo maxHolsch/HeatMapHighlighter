@@ -236,7 +236,7 @@ export default function CorpusHeatmap() {
               border: 'none', outline: 'none', background: 'transparent',
               color: 'var(--ink)',
             }}/>
-          <Btn kind="ink" icon="wand" onClick={() => runQuery(query)} disabled={!corpusId}>Run</Btn>
+          <Btn kind="ink-cobalt" icon="wand" onClick={() => runQuery(query)} disabled={!corpusId}>Run</Btn>
         </div>
         {decomp && (
           <div style={{ borderTop: '2px solid var(--ink)', padding: '12px 18px',
@@ -272,10 +272,10 @@ export default function CorpusHeatmap() {
               </h3>
             </div>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-              <Badge kind={hasQuery ? 'danger' : 'default'} dot={hasQuery}>
+              <Badge kind="btn-ink">
                 {hasQuery ? 'scored' : 'unsorted'}
               </Badge>
-              <Badge kind="info">
+              <Badge kind="btn-info">
                 {corpus?.conversations.reduce((a, c) => a + c.num_snippets, 0) ?? 0} snippets
               </Badge>
               {hasQuery && (

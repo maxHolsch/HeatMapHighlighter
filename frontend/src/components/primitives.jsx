@@ -220,9 +220,10 @@ export function ScribbleRect({ seed: _seed, stroke = 'var(--ink)', style }) {
   );
 }
 
-export function Btn({ children, kind = 'ink', size = 'md', onClick, icon, disabled, type, full, style: extra }) {
+export function Btn({ children, kind = 'ink', size = 'md', onClick, icon, disabled, type, full, frameNudgeY = 0, style: extra, contentStyle }) {
   const colors = {
     ink: { bg: 'transparent', fg: 'var(--ink)' },
+    'ink-cobalt': { bg: 'var(--cobalt)', fg: 'var(--paper)' },
     cobalt: { bg: 'var(--cobalt)', fg: 'var(--paper)' },
     cadmium: { bg: 'var(--cadmium)', fg: 'var(--ink)' },
     vermil: { bg: 'var(--vermillion)', fg: 'var(--paper)' },
@@ -243,7 +244,14 @@ export function Btn({ children, kind = 'ink', size = 'md', onClick, icon, disabl
 
   const offset = active ? 1 : (hover ? sz.shadowDx + 1 : sz.shadowDx);
   const isInk = kind === 'ink';
-  const shadowVisible = kind !== 'ghost' && !isInk;
+  const isInkCobalt = kind === 'ink-cobalt';
+  const shadowVisible = kind !== 'ghost' && !isInk && !isInkCobalt;
+  const nudge = Number(frameNudgeY) || 0;
+  const frameTransform = nudge ? `translateY(${nudge}px)` : undefined;
+  const inkCobaltBlobTransform = `translateY(${nudge - 10}px)`;
+  const shadowTransform = nudge
+    ? `translate(${offset}px, ${offset + nudge}px)`
+    : `translate(${offset}px, ${offset}px)`;
 
   return (
     <button onClick={onClick} disabled={disabled} type={type}
@@ -263,23 +271,31 @@ export function Btn({ children, kind = 'ink', size = 'md', onClick, icon, disabl
       }}>
       <span style={{
         position: 'relative', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-        padding: `${sz.padY}px ${sz.padX}px`, fontSize: sz.fontSize,
+        padding: kind === 'ghost'
+          ? `0 ${sz.padX}px`
+          : `${isInkCobalt ? 1 : sz.padY}px ${sz.padX}px`, fontSize: sz.fontSize,
         color: colors.fg, width: full ? '100%' : 'auto', boxSizing: 'border-box',
         minHeight: sz.h, lineHeight: 1,
       }}>
         {shadowVisible && (
           <ScribbleBlob seed={seedKey + '-sh'} fill="var(--ink)" stroke="none"
-            style={{ position: 'absolute', inset: 0, transform: `translate(${offset}px, ${offset}px)`, zIndex: 0,
+            style={{ position: 'absolute', inset: 0, transform: shadowTransform, zIndex: 0,
               transition: 'transform 140ms var(--ease-snap)', pointerEvents: 'none' }}/>
         )}
         {isInk ? (
           <ScribbleRect seed={seedKey} stroke="var(--ink)"
-            style={{ position: 'absolute', inset: 0, zIndex: 1, pointerEvents: 'none' }}/>
+            style={{ position: 'absolute', inset: 0, zIndex: 1, pointerEvents: 'none', transform: frameTransform,
+              paddingTop: 23, paddingBottom: 23 }}/>
+        ) : isInkCobalt ? (
+          <ScribbleBlob seed={seedKey} fill="var(--cobalt)" stroke="var(--ink)" strokeWidth={2.2}
+            style={{ position: 'absolute', inset: 0, zIndex: 1, pointerEvents: 'none', transform: inkCobaltBlobTransform, paddingTop: 17, paddingBottom: 17 }}/>
         ) : (
           <ScribbleBlob seed={seedKey} fill={colors.bg} stroke="var(--ink)" strokeWidth={2.2}
-            style={{ position: 'absolute', inset: 0, zIndex: 1, pointerEvents: 'none' }}/>
+            style={{
+              position: 'absolute', inset: 0, zIndex: 1, pointerEvents: 'none', transform: frameTransform,
+            }}/>
         )}
-        <span style={{ position: 'relative', zIndex: 2, display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+        <span style={{ position: 'relative', zIndex: 2, display: 'inline-flex', alignItems: 'center', gap: 8, paddingTop: isInkCobalt ? 0 : 9, paddingBottom: isInkCobalt ? 0 : 9, ...contentStyle }}>
           {icon && <Icon name={icon} size={14}/>}
           {children}
         </span>
@@ -288,7 +304,7 @@ export function Btn({ children, kind = 'ink', size = 'md', onClick, icon, disabl
   );
 }
 
-export function Badge({ children, kind = 'default', dot, size = 'md' }) {
+export function Badge({ children, kind = 'default', dot, size = 'md', style: extra }) {
   const map = {
     default: { bg: 'var(--paper-warm)', fg: 'var(--ink)' },
     info: { bg: 'var(--cobalt)', fg: 'var(--paper)' },
@@ -299,6 +315,32 @@ export function Badge({ children, kind = 'default', dot, size = 'md' }) {
     ink: { bg: 'var(--ink)', fg: 'var(--paper)' },
   }[kind];
   const sz = size === 'sm' ? { p: '2px 8px', f: 10 } : { p: '4px 10px', f: 11.5 };
+  if (kind === 'btn-ink' || kind === 'btn-info') {
+    const seedKey = `badge-${size}-${(typeof children === 'string' ? children : 'badge').slice(0, 12)}`;
+    const isInfo = kind === 'btn-info';
+    return (
+      <span style={{
+        position: 'relative', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+        padding: '13px 26px', fontSize: 13,
+        color: isInfo ? 'var(--paper)' : 'var(--ink)', width: 'auto', boxSizing: 'border-box',
+        minHeight: 42, lineHeight: 1, fontFamily: 'var(--font-sans)', fontWeight: 700, letterSpacing: '0.02em',
+        textTransform: 'none',
+        ...extra,
+      }}>
+        {isInfo ? (
+          <ScribbleBlob seed={seedKey} fill="var(--cobalt)" stroke="var(--ink)" strokeWidth={2.2}
+            style={{ position: 'absolute', inset: 0, zIndex: 1, pointerEvents: 'none' }}/>
+        ) : (
+          <ScribbleRect seed={seedKey} stroke="var(--ink)"
+            style={{ position: 'absolute', inset: 0, zIndex: 1, pointerEvents: 'none' }}/>
+        )}
+        <span style={{ position: 'relative', zIndex: 2, display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+          {dot && <span style={{ width: 7, height: 7, borderRadius: '50%', background: 'currentColor' }}/>}
+          {children}
+        </span>
+      </span>
+    );
+  }
   return (
     <span style={{
       display: 'inline-flex', alignItems: 'center', gap: 6,
@@ -306,6 +348,7 @@ export function Badge({ children, kind = 'default', dot, size = 'md' }) {
       letterSpacing: '.08em', textTransform: 'uppercase',
       padding: sz.p, borderRadius: 999, border: '2px solid var(--ink)',
       background: map.bg, color: map.fg,
+      ...extra,
     }}>
       {dot && <span style={{ width: 7, height: 7, borderRadius: '50%', background: 'currentColor' }}/>}
       {children}

@@ -180,7 +180,7 @@ export default function AnthologyWorkspace() {
 
         <div style={{ marginTop: 22, display: 'grid', gridTemplateColumns: '1fr', gap: 14 }}>
           <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
-            <Btn kind="ink" icon="play" onClick={() => setShowKaraoke(true)}>
+            <Btn kind="ink" icon="play" frameNudgeY={-50} onClick={() => setShowKaraoke(true)}>
               Preview karaoke medley
             </Btn>
             <a href={anthologyExportUrl(activeId, 'both', false)} download
@@ -242,7 +242,7 @@ export default function AnthologyWorkspace() {
       ))}
 
       <div style={{ marginTop: 18, textAlign: 'center' }}>
-        <Btn kind="ink" icon="plus" onClick={addNewSection}>Add section</Btn>
+        <Btn kind="ink" icon="plus" onClick={addNewSection} contentStyle={{ paddingTop: 30, paddingBottom: 30 }}>Add section</Btn>
       </div>
 
       {showNew && (
