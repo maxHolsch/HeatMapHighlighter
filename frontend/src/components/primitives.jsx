@@ -288,7 +288,7 @@ export function Btn({ children, kind = 'ink', size = 'md', onClick, icon, disabl
               paddingTop: 23, paddingBottom: 23 }}/>
         ) : isInkCobalt ? (
           <ScribbleBlob seed={seedKey} fill="var(--cobalt)" stroke="var(--ink)" strokeWidth={2.2}
-            style={{ position: 'absolute', inset: 0, zIndex: 1, pointerEvents: 'none', transform: inkCobaltBlobTransform, paddingTop: 17, paddingBottom: 17 }}/>
+            style={{ position: 'absolute', inset: 0, zIndex: 1, pointerEvents: 'none', transform: inkCobaltBlobTransform, paddingTop: 1, paddingBottom: 1 }}/>
         ) : (
           <ScribbleBlob seed={seedKey} fill={colors.bg} stroke="var(--ink)" strokeWidth={2.2}
             style={{
