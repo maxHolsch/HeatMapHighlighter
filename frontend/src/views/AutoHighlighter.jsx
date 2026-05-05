@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Btn, Badge, Burst, Card, Display, Em, Eyebrow, GShape, HandPlayButton, Icon,
+  Btn, Badge, Burst, Card, Display, Em, Eyebrow, GShape, HandCircleBtn, HandPlayButton, HandProgressBar, Icon,
   Modal, Select, TextInput,
 } from '../components/primitives';
 import {
@@ -972,14 +972,33 @@ function FanHeatmap({
       )}
 
       {audioSrc && (
-        <audio
-          ref={audioRef}
-          src={audioSrc}
-          preload="metadata"
-          onPlay={() => setPlaying(true)}
-          onPause={() => setPlaying(false)}
-          onTimeUpdate={(e) => setCurrentSec(e.currentTarget.currentTime || 0)}
-          style={{ display: 'none' }}
+        <HandAudioBar
+          playing={playing}
+          onTogglePlay={togglePlay}
+          currentSec={currentSec}
+          duration={duration}
+          playingIdx={playingIdx}
+          snippet={playingIdx >= 0 ? snippets[playingIdx] : null}
+          onSeekFraction={(f) => {
+            const a = audioRef.current;
+            if (!a) return;
+            const d = duration || a.duration || 0;
+            if (!d) return;
+            try { a.currentTime = Math.max(0, Math.min(d - 0.1, f * d)); }
+            catch { /* not ready */ }
+          }}
+          seed={`fan-${conversationTitle || 'x'}`}
+          audioEl={
+            <audio
+              ref={audioRef}
+              src={audioSrc}
+              preload="metadata"
+              onPlay={() => setPlaying(true)}
+              onPause={() => setPlaying(false)}
+              onTimeUpdate={(e) => setCurrentSec(e.currentTarget.currentTime || 0)}
+              style={{ display: 'none' }}
+            />
+          }
         />
       )}
 
@@ -1330,8 +1349,14 @@ function SnippetDrawer({
 
           {/* Audio play */}
           {audioSrc && (
-            <div style={{ marginBottom: 18, padding: '6px 10px', display: 'flex', alignItems: 'center', gap: 12 }}>
-              <HandPlayButton playing={playing} onClick={playSnippet} size={42} label="Play snippet"/>
+            <div style={{ marginBottom: 18, padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 12,
+              background: 'var(--paper-warm)', border: '2px dashed var(--ink)', borderRadius: 12,
+              boxShadow: '3px 3px 0 0 var(--ink)' }}>
+              <HandCircleBtn size={36} seed={`drawer-${snippetIdx}`}
+                ariaLabel={playing ? 'Pause snippet' : 'Play snippet'}
+                fill="var(--ink)" fg="var(--paper)" onClick={playSnippet}>
+                <Icon name={playing ? 'pause' : 'play'} size={13} stroke="var(--paper)"/>
+              </HandCircleBtn>
               <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5, color: 'var(--fg-muted)' }}>
                 play this snippet · {fmtTime(snippet.audio_start_offset)}–{fmtTime(snippet.audio_end_offset)}
               </span>
@@ -1348,15 +1373,8 @@ function SnippetDrawer({
             <span>{snippet.speaker_name || 'Speaker'}</span>
             <span style={{ opacity: 0.5 }}>· snippet #{snippetIdx} · {fmtTime(snippet.audio_start_offset)}</span>
           </div>
-          <DrawerSnippetText sn={snippet} editedSpan={hasSpan ? editedSpan : null}/>
-          {hasSpan && editedSpan && (
-            <SpanRangeSlider
-              textLen={(snippet.transcript || '').length}
-              charStart={editedSpan.char_start}
-              charEnd={editedSpan.char_end}
-              onChange={(cs, ce) => onSpanEdit(cs, ce)}
-            />
-          )}
+          <DrawerSnippetText sn={snippet} editedSpan={hasSpan ? editedSpan : null}
+            onSpanEdit={hasSpan ? onSpanEdit : null}/>
           {!hasSpan && (
             <div style={{ marginTop: 14, padding: '10px 12px', borderRadius: 6,
               background: 'var(--bone)', border: '1.5px dashed var(--line-soft)',
@@ -1392,103 +1410,195 @@ const navBtnStyle = {
   cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.08em',
 };
 
-function DrawerSnippetText({ sn, editedSpan }) {
+function DrawerSnippetText({ sn, editedSpan, onSpanEdit }) {
   const text = sn.transcript || '';
+  const containerRef = useRef(null);
+  const [hoverIdx, setHoverIdx] = useState(null);
+
   if (!editedSpan) {
-    return <p style={{ fontSize: 14.5, lineHeight: 1.6, color: 'var(--ink)', margin: 0, textWrap: 'pretty' }}>{text}</p>;
+    return (
+      <p style={{ fontSize: 14.5, lineHeight: 1.6, color: 'var(--ink)', margin: 0, textWrap: 'pretty' }}>
+        {text}
+      </p>
+    );
   }
   const cs = Math.max(0, Math.min(text.length, editedSpan.char_start));
   const ce = Math.max(cs, Math.min(text.length, editedSpan.char_end));
-  const before = text.slice(0, cs);
-  const inner = text.slice(cs, ce);
-  const after = text.slice(ce);
-  return (
-    <p style={{ fontSize: 14.5, lineHeight: 1.6, color: 'var(--ink)', margin: 0, textWrap: 'pretty' }}>
-      {before}
-      <mark style={{ background: 'var(--cadmium)', padding: '1px 4px',
-        border: '2px solid var(--ink)', borderRadius: 4, boxShadow: '2px 2px 0 0 var(--ink)',
-        color: 'var(--ink)' }}>
-        {inner || ' '}
-      </mark>
-      {after}
-    </p>
-  );
-}
 
-function SpanRangeSlider({ textLen, charStart, charEnd, onChange }) {
-  const trackRef = useRef(null);
-  const valuesRef = useRef({ charStart, charEnd, textLen });
-  valuesRef.current = { charStart, charEnd, textLen };
-  const [active, setActive] = useState(null); // 'start' | 'end' | null
+  function nearestCharIndex(clientX, clientY) {
+    const root = containerRef.current;
+    if (!root) return null;
+    const charSpans = root.querySelectorAll('[data-char-idx]');
+    let best = -1;
+    let bestDist = Infinity;
+    let bestSide = 0;
+    for (const node of charSpans) {
+      const r = node.getBoundingClientRect();
+      if (clientY < r.top - 4 || clientY > r.bottom + 4) continue;
+      const cx = (r.left + r.right) / 2;
+      const d = Math.abs(clientX - cx);
+      if (d < bestDist) {
+        bestDist = d;
+        best = parseInt(node.dataset.charIdx, 10);
+        bestSide = clientX < cx ? 0 : 1;
+      }
+    }
+    if (best === -1) return null;
+    return Math.max(0, Math.min(text.length, best + bestSide));
+  }
 
   function startDrag(handle, e) {
+    if (!onSpanEdit) return;
     e.preventDefault();
     e.stopPropagation();
-    setActive(handle);
-
     function move(ev) {
-      const r = trackRef.current?.getBoundingClientRect();
-      if (!r) return;
-      const t = Math.max(0, Math.min(1, (ev.clientX - r.left) / Math.max(1, r.width)));
-      const cur = valuesRef.current;
-      const c = Math.round(t * cur.textLen);
+      const idx = nearestCharIndex(ev.clientX, ev.clientY);
+      if (idx == null) return;
       if (handle === 'start') {
-        onChange(Math.max(0, Math.min(c, cur.charEnd - 1)), cur.charEnd);
+        onSpanEdit(Math.max(0, Math.min(idx, ce - 1)), ce);
       } else {
-        onChange(cur.charStart, Math.max(cur.charStart + 1, Math.min(cur.textLen, c)));
+        onSpanEdit(cs, Math.max(cs + 1, Math.min(text.length, idx)));
       }
     }
     function up() {
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
-      setActive(null);
     }
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
   }
 
-  const len = Math.max(1, textLen);
-  const leftPct = (charStart / len) * 100;
-  const rightPct = (charEnd / len) * 100;
+  const handleStyle = (active) => ({
+    display: 'inline-block',
+    width: active ? 12 : 10,
+    height: 22,
+    verticalAlign: 'middle',
+    background: 'var(--vermillion)',
+    border: '2px solid var(--ink)',
+    borderRadius: 3,
+    boxShadow: '2px 2px 0 0 var(--ink)',
+    cursor: onSpanEdit ? 'ew-resize' : 'default',
+    margin: '0 1px',
+    touchAction: 'none',
+    position: 'relative',
+    top: -1,
+  });
+
+  const before = [];
+  const inner = [];
+  const after = [];
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    const node = (
+      <span key={i} data-char-idx={i}
+        onMouseEnter={() => setHoverIdx(i)}
+        onMouseLeave={() => setHoverIdx((v) => (v === i ? null : v))}
+        onClick={(e) => {
+          if (!onSpanEdit) return;
+          const idx = i + (e.clientX > e.currentTarget.getBoundingClientRect().left + 6 ? 1 : 0);
+          if (idx <= cs) onSpanEdit(Math.max(0, idx), ce);
+          else if (idx >= ce) onSpanEdit(cs, Math.min(text.length, idx));
+        }}
+        style={{
+          background: hoverIdx === i && (i < cs || i >= ce) && onSpanEdit
+            ? 'rgba(255,209,26,0.35)' : 'transparent',
+        }}
+      >{ch}</span>
+    );
+    if (i < cs) before.push(node);
+    else if (i < ce) inner.push(node);
+    else after.push(node);
+  }
 
   return (
-    <div style={{ marginTop: 12 }}>
-      <div ref={trackRef}
-        style={{
-          position: 'relative', height: 26, padding: '11px 0',
-          touchAction: 'none', userSelect: 'none',
-        }}>
-        <div style={{ position: 'absolute', top: 12, left: 0, right: 0, height: 3,
-          background: 'var(--bone)', border: '1.5px solid var(--ink)', borderRadius: 2 }}/>
-        <div style={{
-          position: 'absolute', top: 11, left: `${leftPct}%`,
-          width: `${Math.max(0, rightPct - leftPct)}%`, height: 5,
-          background: 'var(--cadmium)', border: '1.5px solid var(--ink)', borderRadius: 2,
-        }}/>
-        <SliderHandle pct={leftPct} active={active === 'start'} onPointerDown={(e) => startDrag('start', e)}/>
-        <SliderHandle pct={rightPct} active={active === 'end'} onPointerDown={(e) => startDrag('end', e)}/>
-      </div>
-      <div style={{ marginTop: 4, display: 'flex', justifyContent: 'space-between',
-        fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--fg-muted)' }}>
-        <span>start {charStart}</span>
-        <span>{charEnd - charStart} chars</span>
-        <span>end {charEnd}</span>
-      </div>
+    <div ref={containerRef}
+      style={{ fontSize: 14.5, lineHeight: 1.7, color: 'var(--ink)', margin: 0, textWrap: 'pretty', userSelect: 'none' }}>
+      {before}
+      {onSpanEdit && (
+        <span role="slider" aria-label="Drag to set span start"
+          onPointerDown={(e) => startDrag('start', e)}
+          style={handleStyle(false)}/>
+      )}
+      <mark style={{ background: 'var(--cadmium)', padding: '1px 2px',
+        borderTop: '2px solid var(--ink)', borderBottom: '2px solid var(--ink)',
+        color: 'var(--ink)' }}>
+        {inner.length ? inner : <span style={{ display: 'inline-block', width: 6 }}> </span>}
+      </mark>
+      {onSpanEdit && (
+        <span role="slider" aria-label="Drag to set span end"
+          onPointerDown={(e) => startDrag('end', e)}
+          style={handleStyle(false)}/>
+      )}
+      {after}
+      {onSpanEdit && (
+        <div style={{ marginTop: 10, fontFamily: 'var(--font-mono)', fontSize: 10.5,
+          color: 'var(--fg-muted)', display: 'flex', justifyContent: 'space-between' }}>
+          <span>drag <b style={{ color: 'var(--vermillion)' }}>red handles</b> to resize · click outside to extend</span>
+          <span>{ce - cs} chars</span>
+        </div>
+      )}
     </div>
   );
 }
 
-function SliderHandle({ pct, active, onPointerDown }) {
+function HandAudioBar({
+  playing, onTogglePlay, currentSec, duration, playingIdx, snippet,
+  onSeekFraction, audioEl, seed,
+}) {
+  const trackRef = useRef(null);
+  const value = (duration && duration > 0) ? Math.max(0, Math.min(1, currentSec / duration)) : 0;
+
+  function handleSeek(e) {
+    const r = trackRef.current?.getBoundingClientRect();
+    if (!r) return;
+    const f = Math.max(0, Math.min(1, (e.clientX - r.left) / Math.max(1, r.width)));
+    onSeekFraction?.(f);
+  }
+
   return (
-    <div onPointerDown={onPointerDown}
-      style={{
-        position: 'absolute', top: 5, left: `${pct}%`,
-        width: 18, height: 18, marginLeft: -9,
-        borderRadius: '50%', background: active ? 'var(--vermillion)' : 'var(--paper)',
-        border: '2px solid var(--ink)',
-        boxShadow: active ? '3px 3px 0 0 var(--ink)' : '2px 2px 0 0 var(--ink)',
-        cursor: 'ew-resize', touchAction: 'none', zIndex: 2,
-      }}/>
+    <div style={{
+      margin: '14px 24px 0', padding: '12px 16px',
+      display: 'flex', alignItems: 'center', gap: 14,
+      background: 'var(--paper-warm)', border: '2px dashed var(--ink)',
+      borderRadius: 14, position: 'relative',
+      boxShadow: '4px 4px 0 0 var(--ink)',
+    }}>
+      <HandCircleBtn
+        size={42} seed={`${seed}-play`}
+        ariaLabel={playing ? 'Pause' : 'Play'}
+        fill="var(--ink)" fg="var(--paper)"
+        onClick={onTogglePlay}
+      >
+        <Icon name={playing ? 'pause' : 'play'} size={16} stroke="var(--paper)"/>
+      </HandCircleBtn>
+
+      <div ref={trackRef} onClick={handleSeek}
+        style={{ flex: 1, minWidth: 120, height: 18, display: 'flex', alignItems: 'center',
+          cursor: duration ? 'pointer' : 'default' }}>
+        <HandProgressBar value={value} seed={`${seed}-track`}
+          fill="var(--vermillion)" track="var(--bone)"/>
+      </div>
+
+      <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5,
+        color: 'var(--fg-muted)', whiteSpace: 'nowrap', minWidth: 96, textAlign: 'right' }}>
+        {duration
+          ? `${fmtTime(currentSec)} / ${fmtTime(duration)}`
+          : fmtTime(currentSec)}
+      </div>
+
+      {playingIdx >= 0 && snippet && (
+        <div style={{
+          position: 'absolute', left: 70, right: 110, bottom: -18,
+          fontFamily: 'var(--font-mono)', fontSize: 10.5,
+          color: 'var(--fg-muted)', whiteSpace: 'nowrap',
+          overflow: 'hidden', textOverflow: 'ellipsis',
+        }}>
+          #{playingIdx} · {snippet.transcript}
+        </div>
+      )}
+
+      {audioEl}
+    </div>
   );
 }
 

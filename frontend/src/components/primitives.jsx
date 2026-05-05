@@ -772,6 +772,111 @@ export function HandPlayButton({ playing, onClick, size = 44, label }) {
   );
 }
 
+export function HandCircleBtn({
+  onClick, ariaLabel, size = 38, fill = 'var(--ink)', fg = 'var(--paper)',
+  stroke = 'var(--ink)', strokeWidth = 1.8, seed = 'cb', children, disabled,
+}) {
+  const sSeed = String(seed).replace(/[^a-zA-Z0-9_-]/g, '') || 'cb';
+  const wobblePath = useMemo(() => {
+    let s = 0; for (let i = 0; i < sSeed.length; i++) s = (s * 31 + sSeed.charCodeAt(i)) | 0;
+    const rand = () => { s = (s * 1103515245 + 12345) & 0x7fffffff; return (s % 1000) / 1000 - 0.5; };
+    const cx = 50, cy = 50, r = 44, N = 28;
+    const pts = [];
+    const phase = (Math.abs(s) % 1000) / 1000 * Math.PI * 2;
+    for (let i = 0; i < N; i++) {
+      const t = (i / N) * Math.PI * 2;
+      const sway = Math.sin(t * 3 + phase) * 1.2 + rand() * 1.2;
+      const rr = r + sway;
+      pts.push([cx + Math.cos(t) * rr, cy + Math.sin(t) * rr]);
+    }
+    let d = `M${pts[0][0].toFixed(1)},${pts[0][1].toFixed(1)}`;
+    for (let i = 0; i < pts.length; i++) {
+      const p0 = pts[(i - 1 + pts.length) % pts.length];
+      const p1 = pts[i];
+      const p2 = pts[(i + 1) % pts.length];
+      const p3 = pts[(i + 2) % pts.length];
+      const c1x = p1[0] + (p2[0] - p0[0]) / 6;
+      const c1y = p1[1] + (p2[1] - p0[1]) / 6;
+      const c2x = p2[0] - (p3[0] - p1[0]) / 6;
+      const c2y = p2[1] - (p3[1] - p1[1]) / 6;
+      d += `C${c1x.toFixed(1)},${c1y.toFixed(1)} ${c2x.toFixed(1)},${c2y.toFixed(1)} ${p2[0].toFixed(1)},${p2[1].toFixed(1)}`;
+    }
+    d += 'Z';
+    return d;
+  }, [sSeed]);
+  const [hover, setHover] = useState(false);
+  const [active, setActive] = useState(false);
+  const lift = active ? 0 : (hover && !disabled ? 2 : 1);
+  return (
+    <button onClick={onClick} aria-label={ariaLabel} disabled={disabled}
+      onMouseEnter={() => setHover(true)} onMouseLeave={() => { setHover(false); setActive(false); }}
+      onMouseDown={() => setActive(true)} onMouseUp={() => setActive(false)}
+      style={{
+        width: size, height: size, padding: 0, background: 'transparent', border: 'none',
+        cursor: disabled ? 'not-allowed' : 'pointer', position: 'relative',
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+        opacity: disabled ? 0.5 : 1,
+        transform: active ? 'translate(1px,1px)' : 'none',
+        transition: 'transform 120ms var(--ease-snap)',
+      }}>
+      <svg width={size} height={size} viewBox="0 0 100 100"
+        style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <path d={wobblePath} fill={stroke} opacity="0.95"
+          transform={`translate(${lift + 1}, ${lift + 1.5})`}/>
+        <path d={wobblePath} fill={fill} stroke={stroke} strokeWidth={strokeWidth}
+          strokeLinejoin="round" strokeLinecap="round"/>
+      </svg>
+      <span style={{ position: 'relative', color: fg, display: 'inline-flex',
+        alignItems: 'center', justifyContent: 'center', lineHeight: 0 }}>
+        {children}
+      </span>
+    </button>
+  );
+}
+
+export function HandProgressBar({ value, height = 10, fill = 'var(--cadmium)',
+  track = 'var(--bone)', stroke = 'var(--ink)', seed = 'pb', style }) {
+  const sSeed = String(seed).replace(/[^a-zA-Z0-9_-]/g, '') || 'pb';
+  const { topPath, botPath } = useMemo(() => {
+    let s = 0; for (let i = 0; i < sSeed.length; i++) s = (s * 31 + sSeed.charCodeAt(i)) | 0;
+    const rand = () => { s = (s * 1103515245 + 12345) & 0x7fffffff; return (s % 1000) / 1000 - 0.5; };
+    const W = 200, H = 12, N = 14;
+    const top = [];
+    const bot = [];
+    const phase = (Math.abs(s) % 1000) / 1000 * Math.PI * 2;
+    for (let i = 0; i <= N; i++) {
+      const x = (i / N) * W;
+      const j1 = Math.sin(i * 0.7 + phase) * 0.7 + rand() * 0.6;
+      const j2 = Math.sin(i * 0.9 + phase + 1) * 0.7 + rand() * 0.6;
+      top.push([x, 0 + j1]);
+      bot.push([x, H + j2]);
+    }
+    const toD = (pts) => pts.map((p, i) => (i === 0 ? 'M' : 'L') + ` ${p[0].toFixed(1)} ${p[1].toFixed(1)}`).join(' ');
+    return { topPath: toD(top), botPath: toD(bot) };
+  }, [sSeed]);
+  const v = Math.max(0, Math.min(1, value || 0));
+  return (
+    <div style={{ position: 'relative', flex: 1, height, ...style }}>
+      <svg viewBox="0 0 200 12" preserveAspectRatio="none"
+        style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', overflow: 'visible' }}>
+        <defs>
+          <clipPath id={`pbclip-${sSeed}`}>
+            <rect x="0" y="-2" width={200 * v} height="16"/>
+          </clipPath>
+        </defs>
+        <path d={topPath} stroke={stroke} strokeWidth="1.4" fill="none"
+          strokeLinecap="round" strokeLinejoin="round"/>
+        <path d={botPath} stroke={stroke} strokeWidth="1.4" fill="none"
+          strokeLinecap="round" strokeLinejoin="round"/>
+        <path d={`${topPath} L 200 12 L 0 12 Z`} fill={track}/>
+        <g clipPath={`url(#pbclip-${sSeed})`}>
+          <path d={`${topPath} L 200 12 L 0 12 Z`} fill={fill}/>
+        </g>
+      </svg>
+    </div>
+  );
+}
+
 export function Modal({ children, onClose, maxWidth = 460 }) {
   return (
     <div onClick={onClose}
